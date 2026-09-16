@@ -1,0 +1,117 @@
+import './styles.css';
+import { AppData, currentAmount, euros, Fine, formatDate, parseAmount, refreshSurcharges, summary, today, uid, whatsappMessage } from './domain';
+import { load, save } from './storage';
+
+let data: AppData;
+let activeView = 'overview';
+let toastTimer: number | undefined;
+
+const app = document.querySelector<HTMLDivElement>('#app')!;
+const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]!));
+const moneyInput = (cents: number) => (cents / 100).toFixed(2);
+const playerName = (id: string) => data.players.find((player) => player.id === id)?.name ?? 'Jugador eliminado';
+const showToast = (message: string) => {
+  const toast = document.querySelector<HTMLDivElement>('#toast');
+  if (!toast) return;
+  toast.textContent = message;
+  toast.classList.add('visible');
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => toast.classList.remove('visible'), 2600);
+};
+
+const persist = async (message?: string) => {
+  data = refreshSurcharges(data);
+  await save(data);
+  render();
+  if (message) showToast(message);
+};
+
+const icon = (name: string) => ({
+  dashboard: '⌂', users: '♟', book: '▤', settings: '⚙', plus: '+', trash: '×', check: '✓', share: '↗', arrow: '→',
+}[name] ?? '•');
+
+const navItem = (id: string, label: string, iconName: string) => `<button class="nav-item ${activeView === id ? 'active' : ''}" data-view="${id}"><span class="nav-icon">${icon(iconName)}</span>${label}</button>`;
+
+const renderSidebar = () => `<aside class="sidebar">
+  <div class="brand"><div class="brand-mark">CC</div><div><strong>Cuenta Clara</strong><span>Control de equipo</span></div></div>
+  <div class="team-switcher"><span class="eyebrow">EQUIPO ACTIVO</span><strong>${escapeHtml(data.settings.teamName)}</strong><span class="status-dot">● Guardado en este dispositivo</span></div>
+  <nav><span class="nav-heading">MENÚ PRINCIPAL</span>${navItem('overview', 'Resumen', 'dashboard')}${navItem('players', 'Jugadores', 'users')}${navItem('fines', 'Multas', 'book')}<span class="nav-heading spaced">CONFIGURACIÓN</span>${navItem('settings', 'Equipo y recargos', 'settings')}</nav>
+  <div class="sidebar-foot"><span class="local-badge">⌁</span><div><strong>Modo local</strong><small>Tus datos no salen del dispositivo</small></div></div>
+</aside>`;
+
+const header = (kicker: string, title: string, subtitle: string, action = '') => `<header class="page-header"><div><span class="eyebrow">${kicker}</span><h1>${title}</h1><p>${subtitle}</p></div>${action}</header>`;
+const button = (label: string, action: string, className = 'button primary', extra = '') => `<button class="${className}" data-action="${action}" ${extra}>${label}</button>`;
+
+const dashboard = () => {
+  const totals = summary(data);
+  const pending = data.fines.filter((fine) => fine.status === 'pending');
+  const recent = [...data.fines].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
+  const max = totals.ranking[0]?.amount ?? 1;
+  return `${header('VISTA GENERAL', 'El pulso del equipo', 'Una mirada rápida a lo que está pendiente y a lo que ya se ha recaudado.', button(`${icon('share')} Compartir pendientes`, 'share', 'button dark'))}
+    <section class="metric-grid"><article class="metric-card amber"><span class="metric-label">PENDIENTE DE PAGO</span><strong>${euros(totals.pendingCents)}</strong><span class="metric-note">${pending.length} ${pending.length === 1 ? 'multa activa' : 'multas activas'}</span></article><article class="metric-card green"><span class="metric-label">TOTAL RECAUDADO</span><strong>${euros(totals.paidCents)}</strong><span class="metric-note">${data.fines.filter((fine) => fine.status === 'paid').length} pagos registrados</span></article><article class="metric-card blue"><span class="metric-label">JUGADORES ACTIVOS</span><strong>${data.players.filter((player) => player.active).length}</strong><span class="metric-note">${data.players.length} en plantilla</span></article></section>
+    <section class="content-grid"><article class="panel ranking-panel"><div class="panel-heading"><div><span class="eyebrow">CONTABILIDAD</span><h2>Ranking de recaudación</h2></div><button class="icon-button" data-view="players" aria-label="Ver jugadores">${icon('arrow')}</button></div>${totals.ranking.length ? totals.ranking.map((entry, index) => `<div class="rank-row"><span class="rank-number">${String(index + 1).padStart(2, '0')}</span><div class="avatar">${escapeHtml(entry.player.name.slice(0, 2).toUpperCase())}</div><div class="rank-person"><strong>${escapeHtml(entry.player.name)}</strong><span>${Math.round((entry.amount / max) * 100)}% del total</span></div><div class="rank-bar"><i style="width:${Math.max(8, (entry.amount / max) * 100)}%"></i></div><strong class="rank-amount">${euros(entry.amount)}</strong></div>`).join('') : `<div class="empty-state compact">Aún no hay pagos registrados.<br><span>El ranking aparecerá aquí al cobrar la primera multa.</span></div>`}</article>
+      <article class="panel recent-panel"><div class="panel-heading"><div><span class="eyebrow">ACTIVIDAD</span><h2>Últimas multas</h2></div>${button('Ver todas', 'fines', 'text-button')}</div>${recent.length ? recent.map((fine) => fineRow(fine)).join('') : `<div class="empty-state">${icon('book')}<strong>Tu historial está limpio</strong><span>Las nuevas multas aparecerán aquí.</span></div>`}</article></section>`;
+};
+
+const fineRow = (fine: Fine) => `<div class="fine-row"><div class="fine-date">${formatDate(fine.date).slice(0, 5)}</div><div class="fine-main"><strong>${escapeHtml(fine.description)}</strong><span>${escapeHtml(playerName(fine.playerId))}</span></div><span class="pill ${fine.status}">${fine.status === 'paid' ? 'Pagada' : 'Pendiente'}</span><strong class="fine-amount">${euros(currentAmount(fine, data.settings))}</strong></div>`;
+
+const playersView = () => `${header('PLANTILLA', 'Jugadores', 'Gestiona quién forma parte del equipo y consulta su actividad.', button(`${icon('plus')} Añadir jugador`, 'add-player', 'button dark'))}<section class="panel table-panel"><div class="panel-heading"><div><span class="eyebrow">${data.players.length} REGISTROS</span><h2>Plantilla del equipo</h2></div></div>${data.players.length ? `<div class="table-head"><span>JUGADOR</span><span>ESTADO</span><span>MULTAS</span><span></span></div>${data.players.map((player) => { const fines = data.fines.filter((fine) => fine.playerId === player.id); return `<div class="player-row"><div class="avatar">${escapeHtml(player.name.slice(0, 2).toUpperCase())}</div><strong>${escapeHtml(player.name)}</strong><span class="pill ${player.active ? 'active' : 'inactive'}">${player.active ? 'Activo' : 'Inactivo'}</span><span>${fines.length} ${fines.length === 1 ? 'multa' : 'multas'}</span><div class="row-actions">${button(player.active ? 'Desactivar' : 'Activar', `toggle-player:${player.id}`, 'text-button')}${button(icon('trash'), `delete-player:${player.id}`, 'icon-button danger', `aria-label="Eliminar ${escapeHtml(player.name)}"`)}</div></div>`; }).join('')}` : `<div class="empty-state">${icon('users')}<strong>Aún no hay jugadores</strong><span>Añade la plantilla para empezar a registrar multas.</span>${button(`${icon('plus')} Añadir primer jugador`, 'add-player', 'button primary')}</div>`}</section>`;
+
+const finesView = () => {
+  const pending = data.fines.filter((fine) => fine.status === 'pending').sort((a, b) => b.date.localeCompare(a.date));
+  const paid = data.fines.filter((fine) => fine.status === 'paid').sort((a, b) => b.date.localeCompare(a.date));
+  return `${header('REGISTRO', 'Multas', 'Añade cargos, registra pagos completos y mantén el histórico bajo control.', button(`${icon('plus')} Nueva multa`, 'add-fine', 'button dark'))}<section class="panel table-panel"><div class="panel-heading"><div><span class="eyebrow">${pending.length} PENDIENTES</span><h2>Por cobrar</h2></div>${pending.length ? button(`${icon('share')} Compartir`, 'share', 'text-button') : ''}</div>${pending.length ? pending.map((fine) => fineCard(fine, true)).join('') : `<div class="empty-state compact">No hay multas pendientes. Buen trabajo.</div>`}</section><section class="panel table-panel history"><div class="panel-heading"><div><span class="eyebrow">HISTÓRICO</span><h2>Pagadas</h2></div><span class="history-total">${euros(summary(data).paidCents)} recaudados</span></div>${paid.length ? paid.map((fine) => fineCard(fine, false)).join('') : `<div class="empty-state compact">Aún no hay pagos en el histórico.</div>`}</section>`;
+};
+
+const fineCard = (fine: Fine, pending: boolean) => `<div class="fine-card"><div class="fine-date large">${formatDate(fine.date)}</div><div class="fine-main"><strong>${escapeHtml(fine.description)}</strong><span>${escapeHtml(playerName(fine.playerId))}${fine.surchargeWeeks ? ` · ${fine.surchargeWeeks} ${fine.surchargeWeeks === 1 ? 'recargo' : 'recargos'}` : ''}</span></div><div class="fine-card-right"><strong>${euros(currentAmount(fine, data.settings))}</strong><span class="pill ${fine.status}">${pending ? 'Pendiente' : `Pagada ${fine.paidAt ? formatDate(fine.paidAt) : ''}`}</span></div>${pending ? button('Marcar pagada', `pay-fine:${fine.id}`, 'button small primary') : ''}${button(icon('trash'), `delete-fine:${fine.id}`, 'icon-button danger', 'aria-label="Eliminar multa"')}</div>`;
+
+const settingsView = () => `${header('CONFIGURACIÓN', 'Equipo y recargos', 'Define las reglas que utiliza Cuenta Clara para calcular cada multa.', '')}<section class="settings-layout"><div><form class="panel form-panel" id="settings-form"><span class="eyebrow">IDENTIDAD DEL EQUIPO</span><h2>Datos principales</h2><label>Nombre del equipo<input name="teamName" value="${escapeHtml(data.settings.teamName)}" required maxlength="60" /></label><div class="divider"></div><span class="eyebrow">PAGO TARDÍO</span><div class="toggle-line"><div><strong>Aplicar recargos semanales</strong><span>Se calcula un recargo fijo por cada semana completa pendiente.</span></div><label class="switch"><input type="checkbox" name="lateFeesEnabled" ${data.settings.lateFeesEnabled ? 'checked' : ''}><span></span></label></div><label>Importe del recargo semanal<div class="input-prefix"><span>€</span><input name="weeklySurcharge" type="number" min="0.01" step="0.01" value="${moneyInput(data.settings.weeklySurchargeCents)}" required /></div></label><button class="button primary" type="submit">Guardar configuración</button></form><section class="panel catalog-panel"><div class="panel-heading"><div><span class="eyebrow">CATÁLOGO</span><h2>Tipos de multa</h2></div>${button(`${icon('plus')} Nueva regla`, 'add-type', 'text-button')}</div>${data.fineTypes.length ? data.fineTypes.map((type) => `<div class="catalog-row"><div><strong>${escapeHtml(type.description)}</strong><span>${euros(type.amountCents)} predeterminados</span></div><div><button class="text-button" data-action="edit-type:${type.id}">Editar</button><button class="icon-button danger" data-action="delete-type:${type.id}" aria-label="Eliminar regla">${icon('trash')}</button></div></div>`).join('') : '<div class="empty-state compact">Crea reglas habituales para registrar multas más rápido.</div>'}</section></div><aside class="tip-card"><span class="tip-icon">✦</span><strong>Una regla clara</strong><p>Los recargos se aplican al cumplirse cada semana completa. Si desactivas esta opción, los recargos ya aplicados se conservan.</p></aside></section>`;
+
+const overviewModal = (content: string) => `<div class="modal-backdrop"><div class="modal">${content}</div></div>`;
+const render = () => { app.innerHTML = `<div class="app-shell">${renderSidebar()}<main class="main-content"><div class="mobile-top"><div class="brand-mark">CC</div><strong>Cuenta Clara</strong><button class="icon-button" data-view="settings">${icon('settings')}</button></div><div class="content-wrap">${activeView === 'overview' ? dashboard() : activeView === 'players' ? playersView() : activeView === 'fines' ? finesView() : settingsView()}</div></main></div><div id="toast" class="toast"></div>`; };
+
+const openModal = (content: string) => { document.body.insertAdjacentHTML('beforeend', overviewModal(content)); };
+const closeModal = () => document.querySelector('.modal-backdrop')?.remove();
+const playerOptions = () => data.players.filter((player) => player.active).map((player) => `<option value="${player.id}">${escapeHtml(player.name)}</option>`).join('');
+const typeOptions = () => data.fineTypes.map((type) => `<option value="${type.id}">${escapeHtml(type.description)} · ${euros(type.amountCents)}</option>`).join('');
+
+const playerForm = () => openModal(`<form class="modal-form" id="player-form"><button type="button" class="modal-close" data-close>×</button><span class="eyebrow">NUEVO REGISTRO</span><h2>Añadir jugador</h2><p class="modal-intro">Solo necesitas su nombre. No tendrá que iniciar sesión.</p><label>Nombre completo<input name="name" autofocus required maxlength="60" placeholder="Ej. Carlos Martín" /></label><div class="modal-actions"><button type="button" class="button ghost" data-close>Cancelar</button><button class="button primary">Guardar jugador</button></div></form>`);
+const fineForm = () => { if (!data.players.some((player) => player.active)) { showToast('Añade un jugador activo antes de crear una multa'); activeView = 'players'; render(); return; } openModal(`<form class="modal-form" id="fine-form"><button type="button" class="modal-close" data-close>×</button><span class="eyebrow">NUEVA MULTA</span><h2>Registrar una multa</h2><p class="modal-intro">La descripción y el importe quedan guardados en este registro.</p><label>Jugador<select name="playerId" required>${playerOptions()}</select></label><label>Tipo de multa<select name="typeId"><option value="">Selecciona del catálogo...</option>${typeOptions()}</select></label><label>Descripción<input name="description" required maxlength="80" placeholder="Ej. Llegar tarde" /></label><label>Importe<div class="input-prefix"><span>€</span><input name="amount" type="number" min="0.01" step="0.01" required placeholder="10.00" /></div></label><label>Fecha<input name="date" type="date" value="${today()}" required /></label><div class="modal-actions"><button type="button" class="button ghost" data-close>Cancelar</button><button class="button primary">Crear multa</button></div></form>`); };
+const typeForm = (typeId?: string) => { const type = data.fineTypes.find((entry) => entry.id === typeId); openModal(`<form class="modal-form" id="type-form"><input type="hidden" name="typeId" value="${type?.id ?? ''}"><button type="button" class="modal-close" data-close>×</button><span class="eyebrow">CATÁLOGO</span><h2>${type ? 'Editar regla' : 'Nueva regla de multa'}</h2><label>Descripción<input name="description" value="${escapeHtml(type?.description ?? '')}" required maxlength="80" placeholder="Ej. No traer equipación" /></label><label>Importe predeterminado<div class="input-prefix"><span>€</span><input name="amount" type="number" min="0.01" step="0.01" value="${type ? moneyInput(type.amountCents) : ''}" required /></div></label><div class="modal-actions"><button type="button" class="button ghost" data-close>Cancelar</button><button class="button primary">Guardar regla</button></div></form>`); };
+
+const confirmAction = (title: string, description: string, action: string) => openModal(`<div class="modal-form"><button type="button" class="modal-close" data-close>×</button><span class="eyebrow">CONFIRMAR ACCIÓN</span><h2>${title}</h2><p class="modal-intro">${description}</p><div class="modal-actions"><button class="button ghost" data-close>Cancelar</button><button class="button danger-fill" data-action="${action}">Eliminar definitivamente</button></div></div>`);
+
+const share = async () => { const text = whatsappMessage(data); try { if (navigator.share) await navigator.share({ title: `${data.settings.teamName} · multas`, text }); else throw new Error('share unavailable'); } catch (error) { if (error instanceof Error && error.name === 'AbortError') return; await navigator.clipboard?.writeText(text); window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener'); showToast('Mensaje copiado. Abriendo WhatsApp...'); } };
+
+document.addEventListener('click', async (event) => {
+  const target = event.target as HTMLElement;
+  const view = target.closest<HTMLElement>('[data-view]')?.dataset.view;
+  if (view) { activeView = view; render(); return; }
+  const action = target.closest<HTMLElement>('[data-action]')?.dataset.action;
+  if (!action) { if (target.matches('[data-close]')) closeModal(); return; }
+  if (action === 'add-player') playerForm();
+  else if (action === 'add-fine') fineForm();
+  else if (action === 'add-type') typeForm();
+  else if (action === 'share') await share();
+  else if (action.startsWith('toggle-player:')) { const player = data.players.find((entry) => entry.id === action.split(':')[1]); if (player) { player.active = !player.active; await persist(player.active ? 'Jugador activado' : 'Jugador desactivado'); } }
+  else if (action.startsWith('pay-fine:')) { const fine = data.fines.find((entry) => entry.id === action.split(':')[1]); if (fine) confirmAction('¿Registrar este pago?', `Se marcará como pagada por ${euros(currentAmount(fine, data.settings))}.`, `confirm-pay:${fine.id}`); }
+  else if (action.startsWith('delete-fine:')) { const fine = data.fines.find((entry) => entry.id === action.split(':')[1]); if (fine) confirmAction('¿Eliminar esta multa?', `${playerName(fine.playerId)} · ${fine.description} · ${euros(currentAmount(fine, data.settings))}. Esta acción no se puede deshacer.`, `confirm-delete-fine:${fine.id}`); }
+  else if (action.startsWith('delete-player:')) { const player = data.players.find((entry) => entry.id === action.split(':')[1]); if (player) confirmAction('¿Eliminar este jugador?', `${player.name}. Sus multas se conservarán con el nombre histórico, pero no podrás asignarle nuevas.`, `confirm-delete-player:${player.id}`); }
+  else if (action.startsWith('edit-type:')) typeForm(action.split(':')[1]);
+  else if (action.startsWith('delete-type:')) { const type = data.fineTypes.find((entry) => entry.id === action.split(':')[1]); if (type) confirmAction('¿Eliminar esta regla?', `${type.description} · ${euros(type.amountCents)}. Las multas ya registradas no cambiarán.`, `confirm-delete-type:${type.id}`); }
+  else if (action.startsWith('confirm-pay:')) { const fine = data.fines.find((entry) => entry.id === action.split(':')[1]); if (fine) { fine.finalAmountCents = currentAmount(fine, data.settings); fine.status = 'paid'; fine.paidAt = today(); closeModal(); await persist('Pago registrado'); } }
+  else if (action.startsWith('confirm-delete-fine:')) { data.fines = data.fines.filter((fine) => fine.id !== action.split(':')[1]); closeModal(); await persist('Multa eliminada'); }
+  else if (action.startsWith('confirm-delete-player:')) { data.players = data.players.filter((player) => player.id !== action.split(':')[1]); closeModal(); await persist('Jugador eliminado'); }
+  else if (action.startsWith('confirm-delete-type:')) { data.fineTypes = data.fineTypes.filter((type) => type.id !== action.split(':')[1]); closeModal(); await persist('Regla eliminada'); }
+});
+
+document.addEventListener('change', (event) => { const target = event.target as HTMLSelectElement; if (target.name === 'typeId') { const type = data.fineTypes.find((entry) => entry.id === target.value); const form = target.closest('form'); if (type && form) { (form.elements.namedItem('description') as HTMLInputElement).value = type.description; (form.elements.namedItem('amount') as HTMLInputElement).value = moneyInput(type.amountCents); } } });
+document.addEventListener('submit', async (event) => { event.preventDefault(); const form = event.target as HTMLFormElement; const values = new FormData(form);
+  if (form.id === 'player-form') { const name = String(values.get('name') ?? '').trim(); if (!name) return; data.players.push({ id: uid(), name, active: true }); closeModal(); activeView = 'players'; await persist('Jugador añadido'); }
+  if (form.id === 'type-form') { const description = String(values.get('description') ?? '').trim(); const amountCents = parseAmount(String(values.get('amount') ?? '')); const typeId = String(values.get('typeId') ?? ''); if (!description || !amountCents) return showToast('Introduce una descripción y un importe válido'); const existing = data.fineTypes.find((type) => type.id === typeId); if (existing) { existing.description = description; existing.amountCents = amountCents; } else data.fineTypes.push({ id: uid(), description, amountCents }); closeModal(); activeView = 'settings'; await persist(existing ? 'Regla actualizada' : 'Regla guardada'); }
+  if (form.id === 'fine-form') { const description = String(values.get('description') ?? '').trim(); const amountCents = parseAmount(String(values.get('amount') ?? '')); const playerId = String(values.get('playerId') ?? ''); const date = String(values.get('date') ?? ''); if (!description || !amountCents || !playerId || !date) return showToast('Completa todos los campos'); data.fines.push({ id: uid(), playerId, description, baseAmountCents: amountCents, date, status: 'pending', surchargeWeeks: 0 }); closeModal(); activeView = 'fines'; await persist('Multa registrada'); }
+  if (form.id === 'settings-form') { const teamName = String(values.get('teamName') ?? '').trim(); const weeklySurchargeCents = parseAmount(String(values.get('weeklySurcharge') ?? '')); if (!teamName || !weeklySurchargeCents) return showToast('Revisa el nombre y el recargo'); data.settings = { teamName, weeklySurchargeCents, lateFeesEnabled: values.get('lateFeesEnabled') === 'on' }; await persist('Configuración guardada'); }
+});
+
+const init = async () => { data = refreshSurcharges(await load()); await save(data); render(); if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => undefined); };
+init().catch(() => { app.innerHTML = '<main class="error-screen"><h1>No se pudo abrir el almacenamiento local</h1><p>Comprueba que el navegador permite datos para esta aplicación.</p></main>'; });

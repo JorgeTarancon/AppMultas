@@ -1,0 +1,10 @@
+{
+  "name": "Cuenta Clara",
+  "short_name": "Cuenta Clara",
+  "description": "Gestión local de multas para equipos de fútbol",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#f4f0e8",
+  "theme_color": "#132a2e",
+  "lang": "es"
+}

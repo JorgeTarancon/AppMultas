@@ -195,7 +195,7 @@ export const whatsappMessage = (data: AppData) => {
     lines.push(`Total ${group.player.name}: ${euros(total)}`, '');
   }
   const totals = summary(data);
-  lines.push(`*Total pendiente: ${euros(totals.pendingCents)}*`, `Total recaudado históricamente: ${euros(totals.paidCents)}`);
+  lines.push(`*Total pendiente: ${euros(totals.pendingCents)}*`, `Total recaudado: ${euros(totals.paidCents)}`);
   return lines.join('\n');
 };
 

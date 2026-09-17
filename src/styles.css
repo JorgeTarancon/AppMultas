@@ -32,6 +32,9 @@ button { cursor: pointer; }
 .transaction-card.expense { border-left: 3px solid #c87968; padding-left: 12px; }
 .transaction-card.income .transaction-amount { color: #4d8a3f; }
 .transaction-card.expense .transaction-amount { color: #b65345; }
+.transaction-card.consumption { border-left: 3px solid #d2a44e; padding-left: 12px; }
+.transaction-card.consumption .transaction-amount { color: #a47722; }
+.player-balance { color: #4d8a3f; font-weight: 700; }
 .transaction-amount { white-space: nowrap; }
 @media (max-width: 900px) { .metric-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 680px) { .metric-grid { grid-template-columns: 1fr; }.transaction-card { grid-template-columns: 1fr auto; gap: 6px 10px; }.transaction-card .fine-date { grid-column: 1; grid-row: 1; }.transaction-card .fine-main { grid-column: 1; grid-row: 2; }.transaction-card .transaction-amount { grid-column: 2; grid-row: 1 / span 2; }.transaction-card > .icon-button { grid-column: 2; grid-row: 3; justify-self: end; } }

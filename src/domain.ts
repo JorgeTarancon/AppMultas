@@ -17,6 +17,7 @@ export type Fine = {
   surchargeWeeks: number;
   surchargeApplications: SurchargeApplication[];
   finalAmountCents?: number;
+  paidAmountCents?: number;
   paidAt?: string;
 };
 
@@ -36,7 +37,19 @@ export type Transaction = {
   createdAt: string;
 };
 
-export type AppData = { settings: Settings; players: Player[]; fineTypes: FineType[]; fines: Fine[]; transactions: Transaction[] };
+export type BalanceMovementType = 'deposit' | 'consumption';
+export type BalanceMovement = {
+  id: string;
+  playerId: string;
+  type: BalanceMovementType;
+  amountCents: number;
+  description: string;
+  date: string;
+  createdAt: string;
+  fineId?: string;
+};
+
+export type AppData = { settings: Settings; players: Player[]; fineTypes: FineType[]; fines: Fine[]; transactions: Transaction[]; balanceMovements: BalanceMovement[] };
 
 export const defaultData = (): AppData => ({
   settings: { teamName: 'Mi equipo', lateFeesEnabled: true, weeklySurchargeCents: 200, surchargePeriodDays: 7 },
@@ -44,6 +57,7 @@ export const defaultData = (): AppData => ({
   fineTypes: [],
   fines: [],
   transactions: [],
+  balanceMovements: [],
 });
 
 export const today = () => new Date().toISOString().slice(0, 10);
@@ -88,7 +102,38 @@ export const isSurchargeDue = (fine: Fine, settings: Settings, reference = today
 export const currentAmount = (fine: Fine, settings: Settings, reference = today()) => {
   if (fine.status === 'paid' && fine.finalAmountCents !== undefined) return fine.finalAmountCents;
   const appliedAmount = fine.surchargeApplications.reduce((sum, application) => sum + application.amountCents, 0);
-  return fine.baseAmountCents + fine.surchargeWeeks * settings.weeklySurchargeCents + appliedAmount;
+  return Math.max(0, fine.baseAmountCents + fine.surchargeWeeks * settings.weeklySurchargeCents + appliedAmount - (fine.paidAmountCents ?? 0));
+};
+
+export const balanceForPlayer = (data: AppData, playerId: string) => data.balanceMovements
+  .filter((movement) => movement.playerId === playerId)
+  .reduce((balance, movement) => balance + (movement.type === 'deposit' ? movement.amountCents : -movement.amountCents), 0);
+
+export const createBalanceDeposit = (data: AppData, playerId: string, amountCents: number | null, description: string, date: string, createdAt = new Date().toISOString()): AppData | null => {
+  if (!data.players.some((player) => player.id === playerId) || amountCents === null || amountCents <= 0 || !Number.isInteger(amountCents) || !description.trim() || !isValidDate(date)) return null;
+  const movement: BalanceMovement = { id: uid(), playerId, type: 'deposit', amountCents, description: description.trim(), date, createdAt };
+  return { ...data, balanceMovements: [...data.balanceMovements, movement] };
+};
+
+export const createFineWithBalance = (data: AppData, fine: Fine): AppData => {
+  const existingFine = data.fines.some((entry) => entry.id === fine.id);
+  if (existingFine) return data;
+  const amountCents = currentAmount(fine, data.settings);
+  const availableCents = Math.max(0, balanceForPlayer(data, fine.playerId));
+  const consumedCents = Math.min(availableCents, amountCents);
+  const now = new Date().toISOString();
+  const consumption: BalanceMovement | null = consumedCents > 0 ? {
+    id: uid(), playerId: fine.playerId, type: 'consumption', amountCents: consumedCents,
+    description: `Aplicado a multa: ${fine.description}`, date: fine.date, createdAt: now, fineId: fine.id,
+  } : null;
+  const updatedFine: Fine = consumedCents === amountCents
+    ? { ...fine, status: 'paid', finalAmountCents: amountCents, paidAmountCents: consumedCents, paidAt: fine.date }
+    : { ...fine, paidAmountCents: consumedCents };
+  return {
+    ...data,
+    fines: [...data.fines, updatedFine],
+    balanceMovements: consumption ? [...data.balanceMovements, consumption] : data.balanceMovements,
+  };
 };
 
 export const refreshSurcharges = (data: AppData): AppData => data;
@@ -120,13 +165,18 @@ export const summary = (data: AppData) => {
   })).filter((entry) => entry.amount > 0).sort((a, b) => b.amount - a.amount);
   const paidCents = paid.reduce((sum, fine) => sum + currentAmount(fine, data.settings), 0);
   const manualIncomeCents = data.transactions.filter((transaction) => transaction.type === 'income').reduce((sum, transaction) => sum + transaction.amountCents, 0);
+  const balanceIncomeCents = data.balanceMovements.filter((movement) => movement.type === 'deposit').reduce((sum, movement) => sum + movement.amountCents, 0);
+  const balanceConsumptionCents = data.balanceMovements.filter((movement) => movement.type === 'consumption').reduce((sum, movement) => sum + movement.amountCents, 0);
   const expenseCents = data.transactions.filter((transaction) => transaction.type === 'expense').reduce((sum, transaction) => sum + transaction.amountCents, 0);
   return {
     pendingCents: pending.reduce((sum, fine) => sum + currentAmount(fine, data.settings), 0),
     paidCents,
+    collectedPaidCents: Math.max(0, paidCents - balanceConsumptionCents),
     manualIncomeCents,
+    balanceIncomeCents,
+    balanceConsumptionCents,
     expenseCents,
-    balanceCents: paidCents + manualIncomeCents - expenseCents,
+    balanceCents: paidCents + manualIncomeCents + balanceIncomeCents - balanceConsumptionCents - expenseCents,
     ranking,
   };
 };

@@ -1,4 +1,4 @@
-import { AppData, defaultData, Fine, Player, FineType, Settings, SurchargeApplication, Transaction } from './domain';
+import { AppData, BalanceMovement, defaultData, Fine, Player, FineType, Settings, SurchargeApplication, Transaction } from './domain';
 
 const DB_NAME = 'cuenta-clara';
 const STORE = 'app';
@@ -56,6 +56,7 @@ const normalizeFine = (value: unknown): Fine | null => {
     surchargeWeeks: nonNegativeInteger(value.surchargeWeeks, 0),
     surchargeApplications: applications,
     ...(typeof value.finalAmountCents === 'number' ? { finalAmountCents: value.finalAmountCents } : {}),
+    ...(typeof value.paidAmountCents === 'number' ? { paidAmountCents: value.paidAmountCents } : {}),
     ...(typeof value.paidAt === 'string' ? { paidAt: value.paidAt } : {}),
   };
 };
@@ -82,5 +83,13 @@ const normalizeData = (value: unknown): AppData => {
   const fineTypes = Array.isArray(value.fineTypes) ? value.fineTypes as FineType[] : [];
   const fines = Array.isArray(value.fines) ? value.fines.map(normalizeFine).filter((entry): entry is Fine => entry !== null) : [];
   const transactions = Array.isArray(value.transactions) ? value.transactions.map(normalizeTransaction).filter((entry): entry is Transaction => entry !== null) : [];
-  return { settings, players, fineTypes, fines, transactions };
+  const balanceMovements = Array.isArray(value.balanceMovements) ? value.balanceMovements.map(normalizeBalanceMovement).filter((entry): entry is BalanceMovement => entry !== null) : [];
+  return { settings, players, fineTypes, fines, transactions, balanceMovements };
+};
+
+const normalizeBalanceMovement = (value: unknown): BalanceMovement | null => {
+  if (!isRecord(value) || typeof value.id !== 'string' || typeof value.playerId !== 'string' || (value.type !== 'deposit' && value.type !== 'consumption') || typeof value.description !== 'string' || typeof value.date !== 'string' || typeof value.createdAt !== 'string') return null;
+  const amountCents = nonNegativeInteger(value.amountCents, -1);
+  if (amountCents <= 0 || !value.description.trim()) return null;
+  return { id: value.id, playerId: value.playerId, type: value.type, amountCents, description: value.description.trim(), date: value.date, createdAt: value.createdAt, ...(typeof value.fineId === 'string' ? { fineId: value.fineId } : {}) };
 };

@@ -2,6 +2,7 @@ export type Settings = {
   teamName: string;
   lateFeesEnabled: boolean;
   weeklySurchargeCents: number;
+  surchargePeriodDays: number;
 };
 
 export type Player = { id: string; name: string; active: boolean };
@@ -14,14 +15,21 @@ export type Fine = {
   date: string;
   status: 'pending' | 'paid';
   surchargeWeeks: number;
+  surchargeApplications: SurchargeApplication[];
   finalAmountCents?: number;
   paidAt?: string;
+};
+
+export type SurchargeApplication = {
+  appliedAt: string;
+  amountCents: number;
+  totalAmountCents: number;
 };
 
 export type AppData = { settings: Settings; players: Player[]; fineTypes: FineType[]; fines: Fine[] };
 
 export const defaultData = (): AppData => ({
-  settings: { teamName: 'Mi equipo', lateFeesEnabled: true, weeklySurchargeCents: 200 },
+  settings: { teamName: 'Mi equipo', lateFeesEnabled: true, weeklySurchargeCents: 200, surchargePeriodDays: 7 },
   players: [],
   fineTypes: [],
   fines: [],
@@ -34,7 +42,7 @@ export const parseAmount = (value: string) => {
   if (!normalized || !Number.isFinite(Number(normalized)) || Number(normalized) <= 0) return null;
   return Math.round(Number(normalized) * 100);
 };
-export const formatDate = (value: string) => new Intl.DateTimeFormat('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(`${value}T12:00:00`));
+export const formatDate = (value: string) => new Intl.DateTimeFormat('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(dateAtUtcNoon(value));
 
 export const weeksDue = (fineDate: string, reference = today()) => {
   const start = new Date(`${fineDate}T12:00:00`).getTime();
@@ -42,21 +50,49 @@ export const weeksDue = (fineDate: string, reference = today()) => {
   return Math.max(0, Math.floor((end - start) / 86_400_000 / 7));
 };
 
-export const currentAmount = (fine: Fine, settings: Settings, reference = today()) => {
-  if (fine.status === 'paid' && fine.finalAmountCents !== undefined) return fine.finalAmountCents;
-  const weeks = settings.lateFeesEnabled && fine.status === 'pending' ? weeksDue(fine.date, reference) : fine.surchargeWeeks;
-  return fine.baseAmountCents + Math.max(fine.surchargeWeeks, weeks) * settings.weeklySurchargeCents;
+const dateOnly = (value: string) => value.slice(0, 10);
+const dateAtUtcNoon = (value: string) => new Date(`${dateOnly(value)}T12:00:00Z`);
+
+export const daysElapsed = (start: string, end = today()) => {
+  const startTime = dateAtUtcNoon(start).getTime();
+  const endTime = dateAtUtcNoon(end).getTime();
+  return Math.max(0, Math.floor((endTime - startTime) / 86_400_000));
 };
 
-export const refreshSurcharges = (data: AppData, reference = today()): AppData => ({
-  ...data,
-  fines: data.fines.map((fine) => ({
-    ...fine,
-    surchargeWeeks: fine.status === 'pending' && data.settings.lateFeesEnabled
-      ? Math.max(fine.surchargeWeeks, weeksDue(fine.date, reference))
-      : fine.surchargeWeeks,
-  })),
-});
+export const surchargeCount = (fine: Fine) => fine.surchargeWeeks + fine.surchargeApplications.length;
+export const lastSurchargeDate = (fine: Fine) => fine.surchargeApplications.at(-1)?.appliedAt ?? fine.date;
+export const isSurchargeDue = (fine: Fine, settings: Settings, reference = today()) => (
+  fine.status === 'pending'
+  && settings.lateFeesEnabled
+  && Number.isInteger(settings.surchargePeriodDays)
+  && settings.surchargePeriodDays > 0
+  && daysElapsed(lastSurchargeDate(fine), reference) >= settings.surchargePeriodDays
+);
+
+export const currentAmount = (fine: Fine, settings: Settings, reference = today()) => {
+  if (fine.status === 'paid' && fine.finalAmountCents !== undefined) return fine.finalAmountCents;
+  const appliedAmount = fine.surchargeApplications.reduce((sum, application) => sum + application.amountCents, 0);
+  return fine.baseAmountCents + fine.surchargeWeeks * settings.weeklySurchargeCents + appliedAmount;
+};
+
+export const refreshSurcharges = (data: AppData): AppData => data;
+
+export const applySurcharge = (data: AppData, fineId: string, appliedAt = new Date().toISOString()): AppData | null => {
+  const fine = data.fines.find((entry) => entry.id === fineId);
+  if (!fine || !isSurchargeDue(fine, data.settings, dateOnly(appliedAt))) return null;
+  const amountCents = data.settings.weeklySurchargeCents;
+  const application: SurchargeApplication = {
+    appliedAt,
+    amountCents,
+    totalAmountCents: currentAmount(fine, data.settings) + amountCents,
+  };
+  return {
+    ...data,
+    fines: data.fines.map((entry) => entry.id === fineId
+      ? { ...entry, surchargeApplications: [...entry.surchargeApplications, application] }
+      : entry),
+  };
+};
 
 export const summary = (data: AppData) => {
   const activeFines = data.fines;

@@ -176,7 +176,7 @@ export const summary = (data: AppData) => {
     balanceIncomeCents,
     balanceConsumptionCents,
     expenseCents,
-    balanceCents: paidCents + manualIncomeCents + balanceIncomeCents - balanceConsumptionCents - expenseCents,
+    balanceCents: Math.max(0, paidCents - balanceConsumptionCents) + manualIncomeCents + balanceIncomeCents - expenseCents,
     ranking,
   };
 };

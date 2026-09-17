@@ -1,4 +1,4 @@
-import { AppData, defaultData, Fine, Player, FineType, Settings, SurchargeApplication } from './domain';
+import { AppData, defaultData, Fine, Player, FineType, Settings, SurchargeApplication, Transaction } from './domain';
 
 const DB_NAME = 'cuenta-clara';
 const STORE = 'app';
@@ -60,6 +60,14 @@ const normalizeFine = (value: unknown): Fine | null => {
   };
 };
 
+const normalizeTransaction = (value: unknown): Transaction | null => {
+  if (!isRecord(value) || typeof value.id !== 'string' || (value.type !== 'income' && value.type !== 'expense') || typeof value.description !== 'string' || typeof value.date !== 'string' || typeof value.createdAt !== 'string') return null;
+  const amountCents = nonNegativeInteger(value.amountCents, -1);
+  return amountCents > 0 && value.description.trim()
+    ? { id: value.id, type: value.type, amountCents, description: value.description.trim(), date: value.date, createdAt: value.createdAt }
+    : null;
+};
+
 const normalizeData = (value: unknown): AppData => {
   const defaults = defaultData();
   if (!isRecord(value)) return defaults;
@@ -73,5 +81,6 @@ const normalizeData = (value: unknown): AppData => {
   const players = Array.isArray(value.players) ? value.players as Player[] : [];
   const fineTypes = Array.isArray(value.fineTypes) ? value.fineTypes as FineType[] : [];
   const fines = Array.isArray(value.fines) ? value.fines.map(normalizeFine).filter((entry): entry is Fine => entry !== null) : [];
-  return { settings, players, fineTypes, fines };
+  const transactions = Array.isArray(value.transactions) ? value.transactions.map(normalizeTransaction).filter((entry): entry is Transaction => entry !== null) : [];
+  return { settings, players, fineTypes, fines, transactions };
 };

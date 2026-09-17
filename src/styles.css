@@ -24,3 +24,14 @@ button { cursor: pointer; }
 .surcharge-history { color: var(--muted); }
 .surcharge-action { color: #fff; background: #c84d3e; }
 .field-hint { color: var(--muted); font-size: 10px; font-weight: 400; }
+.metric-grid { grid-template-columns: repeat(4, 1fr); }
+.metric-card.rose { background: #e9b3a5; }
+.transaction-card { display: grid; grid-template-columns: 92px minmax(130px, 1fr) auto auto; gap: 16px; align-items: center; padding: 14px 0; border-bottom: 1px solid #eeeae1; }
+.transaction-card:last-child { border-bottom: 0; }
+.transaction-card.income { border-left: 3px solid #79a94d; padding-left: 12px; }
+.transaction-card.expense { border-left: 3px solid #c87968; padding-left: 12px; }
+.transaction-card.income .transaction-amount { color: #4d8a3f; }
+.transaction-card.expense .transaction-amount { color: #b65345; }
+.transaction-amount { white-space: nowrap; }
+@media (max-width: 900px) { .metric-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 680px) { .metric-grid { grid-template-columns: 1fr; }.transaction-card { grid-template-columns: 1fr auto; gap: 6px 10px; }.transaction-card .fine-date { grid-column: 1; grid-row: 1; }.transaction-card .fine-main { grid-column: 1; grid-row: 2; }.transaction-card .transaction-amount { grid-column: 2; grid-row: 1 / span 2; }.transaction-card > .icon-button { grid-column: 2; grid-row: 3; justify-self: end; } }

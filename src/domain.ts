@@ -26,13 +26,24 @@ export type SurchargeApplication = {
   totalAmountCents: number;
 };
 
-export type AppData = { settings: Settings; players: Player[]; fineTypes: FineType[]; fines: Fine[] };
+export type TransactionType = 'income' | 'expense';
+export type Transaction = {
+  id: string;
+  type: TransactionType;
+  amountCents: number;
+  description: string;
+  date: string;
+  createdAt: string;
+};
+
+export type AppData = { settings: Settings; players: Player[]; fineTypes: FineType[]; fines: Fine[]; transactions: Transaction[] };
 
 export const defaultData = (): AppData => ({
   settings: { teamName: 'Mi equipo', lateFeesEnabled: true, weeklySurchargeCents: 200, surchargePeriodDays: 7 },
   players: [],
   fineTypes: [],
   fines: [],
+  transactions: [],
 });
 
 export const today = () => new Date().toISOString().slice(0, 10);
@@ -41,6 +52,11 @@ export const parseAmount = (value: string) => {
   const normalized = value.replace(',', '.').trim();
   if (!normalized || !Number.isFinite(Number(normalized)) || Number(normalized) <= 0) return null;
   return Math.round(Number(normalized) * 100);
+};
+export const isValidDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(new Date(`${value}T12:00:00Z`).getTime());
+export const createTransaction = (type: TransactionType, amountCents: number | null, description: string, date: string, createdAt = new Date().toISOString()): Transaction | null => {
+  if ((type !== 'income' && type !== 'expense') || amountCents === null || amountCents <= 0 || !Number.isInteger(amountCents) || !description.trim() || !isValidDate(date)) return null;
+  return { id: uid(), type, amountCents, description: description.trim(), date, createdAt };
 };
 export const formatDate = (value: string) => new Intl.DateTimeFormat('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(dateAtUtcNoon(value));
 
@@ -102,9 +118,15 @@ export const summary = (data: AppData) => {
     player,
     amount: paid.filter((fine) => fine.playerId === player.id).reduce((sum, fine) => sum + currentAmount(fine, data.settings), 0),
   })).filter((entry) => entry.amount > 0).sort((a, b) => b.amount - a.amount);
+  const paidCents = paid.reduce((sum, fine) => sum + currentAmount(fine, data.settings), 0);
+  const manualIncomeCents = data.transactions.filter((transaction) => transaction.type === 'income').reduce((sum, transaction) => sum + transaction.amountCents, 0);
+  const expenseCents = data.transactions.filter((transaction) => transaction.type === 'expense').reduce((sum, transaction) => sum + transaction.amountCents, 0);
   return {
     pendingCents: pending.reduce((sum, fine) => sum + currentAmount(fine, data.settings), 0),
-    paidCents: paid.reduce((sum, fine) => sum + currentAmount(fine, data.settings), 0),
+    paidCents,
+    manualIncomeCents,
+    expenseCents,
+    balanceCents: paidCents + manualIncomeCents - expenseCents,
     ranking,
   };
 };

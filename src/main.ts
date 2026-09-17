@@ -99,6 +99,7 @@ document.addEventListener('click', async (event) => {
   if (action === 'add-player') playerForm();
   else if (action === 'add-fine') fineForm();
   else if (action === 'add-transaction') transactionForm();
+  else if (action === 'fines') { activeView = 'fines'; render(); }
   else if (action.startsWith('add-balance:')) balanceForm(action.split(':')[1]);
   else if (action === 'add-type') typeForm();
   else if (action === 'share') await share();

@@ -17,7 +17,7 @@ export const supabase: SupabaseClient | null = isSupabaseConfigured
 
 export type AuthState = { session: Session | null; user: User | null };
 
-export const requestMagicLink = async (email: string, redirectTo = window.location.origin) => {
+export const requestMagicLink = async (email: string, redirectTo = window.location.href) => {
   if (!supabase) throw new Error('Supabase no está configurado');
   const normalizedEmail = email.trim().toLowerCase();
   if (!normalizedEmail) throw new Error('Introduce un email válido');

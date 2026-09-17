@@ -1,10 +1,16 @@
 import './styles.css';
 import { AppData, applySurcharge, balanceForPlayer, createBalanceDeposit, createFineWithBalance, createTransaction, currentAmount, euros, Fine, formatDate, isSurchargeDue, parseAmount, surchargeCount, summary, today, Transaction, uid, whatsappMessage } from './domain';
 import { load, save } from './storage';
+import { AuthState, getAuthState, isSupabaseConfigured, requestMagicLink, signOut, subscribeToAuth } from './supabase';
 
 let data: AppData;
 let activeView = 'overview';
 let toastTimer: number | undefined;
+let authState: AuthState = { session: null, user: null };
+let authLoading = isSupabaseConfigured;
+let authError = '';
+let authMessage = '';
+let loginBusy = false;
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]!));
@@ -18,6 +24,8 @@ const showToast = (message: string) => {
   window.clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => toast.classList.remove('visible'), 2600);
 };
+
+const loginView = () => `<main class="login-screen"><section class="login-panel"><div class="brand login-brand"><div class="brand-mark">CC</div><div><strong>Cuenta Clara</strong><span>Control de equipo</span></div></div><span class="eyebrow">ACCESO DEL EQUIPO</span><h1>Entra a tu cuenta</h1><p>Usa tu email para recibir un enlace de acceso seguro. No necesitas contraseña.</p><form id="login-form" class="login-form"><label>Email<input name="email" type="email" autocomplete="email" required placeholder="tu@email.com" /></label><button class="button primary" type="submit" ${loginBusy ? 'disabled' : ''}>${loginBusy ? 'Enviando...' : 'Enviar enlace de acceso'}</button>${authMessage ? `<div class="login-message success">${escapeHtml(authMessage)}</div>` : ''}${authError ? `<div class="login-message error">${escapeHtml(authError)}</div>` : ''}</form></section></main>`;
 
 const persist = async (message?: string) => {
   await save(data);
@@ -35,7 +43,7 @@ const renderSidebar = () => `<aside class="sidebar">
   <div class="brand"><div class="brand-mark">CC</div><div><strong>Cuenta Clara</strong><span>Control de equipo</span></div></div>
   <div class="team-switcher"><span class="eyebrow">EQUIPO ACTIVO</span><strong>${escapeHtml(data.settings.teamName)}</strong><span class="status-dot">● Guardado en este dispositivo</span></div>
   <nav><span class="nav-heading">MENÚ PRINCIPAL</span>${navItem('overview', 'Resumen', 'dashboard')}${navItem('players', 'Jugadores', 'users')}${navItem('fines', 'Multas', 'book')}<span class="nav-heading spaced">CONFIGURACIÓN</span>${navItem('settings', 'Equipo y recargos', 'settings')}</nav>
-  <div class="sidebar-foot"><span class="local-badge">⌁</span><div><strong>Modo local</strong><small>Tus datos no salen del dispositivo</small></div></div>
+  <div class="sidebar-foot"><span class="local-badge">⌁</span><div><strong>${isSupabaseConfigured ? 'Sesión activa' : 'Modo local'}</strong><small>${isSupabaseConfigured ? escapeHtml(authState.user?.email ?? '') : 'Tus datos no salen del dispositivo'}</small></div>${isSupabaseConfigured ? '<button class="icon-button" data-action="sign-out" aria-label="Cerrar sesión">×</button>' : ''}</div>
 </aside>`;
 
 const header = (kicker: string, title: string, subtitle: string, action = '') => `<header class="page-header"><div><span class="eyebrow">${kicker}</span><h1>${title}</h1><p>${subtitle}</p></div>${action}</header>`;
@@ -75,7 +83,11 @@ const fineCard = (fine: Fine, pending: boolean) => { const due = pending && isSu
 const settingsView = () => `${header('CONFIGURACIÓN', 'Equipo y recargos', 'Define las reglas que utiliza Cuenta Clara para calcular cada multa.', '')}<section class="settings-layout"><div><form class="panel form-panel" id="settings-form"><span class="eyebrow">IDENTIDAD DEL EQUIPO</span><h2>Datos principales</h2><label>Nombre del equipo<input name="teamName" value="${escapeHtml(data.settings.teamName)}" required maxlength="60" /></label><div class="divider"></div><span class="eyebrow">PAGO TARDÍO</span><div class="toggle-line"><div><strong>Habilitar recargos</strong><span>Se avisa cuando vence el período y tú decides cuándo aplicarlo.</span></div><label class="switch"><input type="checkbox" name="lateFeesEnabled" ${data.settings.lateFeesEnabled ? 'checked' : ''}><span></span></label></div><label>Importe del recargo<div class="input-prefix"><span>€</span><input name="weeklySurcharge" type="number" min="0.01" step="0.01" value="${moneyInput(data.settings.weeklySurchargeCents)}" required /></div></label><label>Período hasta el siguiente recargo<input name="surchargePeriodDays" type="number" min="1" step="1" value="${data.settings.surchargePeriodDays}" required /><small class="field-hint">Días desde la multa o desde el último recargo aplicado.</small></label><button class="button primary" type="submit">Guardar configuración</button></form><section class="panel catalog-panel"><div class="panel-heading"><div><span class="eyebrow">CATÁLOGO</span><h2>Tipos de multa</h2></div>${button(`${icon('plus')} Nueva regla`, 'add-type', 'text-button')}</div>${data.fineTypes.length ? data.fineTypes.map((type) => `<div class="catalog-row"><div><strong>${escapeHtml(type.description)}</strong><span>${euros(type.amountCents)} predeterminados</span></div><div><button class="text-button" data-action="edit-type:${type.id}">Editar</button><button class="icon-button danger" data-action="delete-type:${type.id}" aria-label="Eliminar regla">${icon('trash')}</button></div></div>`).join('') : '<div class="empty-state compact">Crea reglas habituales para registrar multas más rápido.</div>'}</section></div><aside class="tip-card"><span class="tip-icon">✦</span><strong>Una regla clara</strong><p>Los recargos se aplican al cumplirse cada período configurado y siempre requieren confirmación.</p></aside></section>`;
 
 const overviewModal = (content: string) => `<div class="modal-backdrop"><div class="modal">${content}</div></div>`;
-const render = () => { app.innerHTML = `<div class="app-shell">${renderSidebar()}<main class="main-content"><div class="mobile-top"><div class="brand-mark">CC</div><strong>Cuenta Clara</strong><button class="icon-button" data-view="settings">${icon('settings')}</button></div><div class="content-wrap">${activeView === 'overview' ? dashboard() : activeView === 'players' ? playersView() : activeView === 'fines' ? finesView() : settingsView()}</div></main></div><div id="toast" class="toast"></div>`; };
+const render = () => {
+  if (isSupabaseConfigured && authLoading) { app.innerHTML = '<main class="login-screen"><div class="login-loading">Comprobando sesión...</div></main>'; return; }
+  if (isSupabaseConfigured && !authState.user) { app.innerHTML = loginView(); return; }
+  app.innerHTML = `<div class="app-shell">${renderSidebar()}<main class="main-content"><div class="mobile-top"><div class="brand-mark">CC</div><strong>Cuenta Clara</strong><button class="icon-button" data-view="settings">${icon('settings')}</button></div><div class="content-wrap">${activeView === 'overview' ? dashboard() : activeView === 'players' ? playersView() : activeView === 'fines' ? finesView() : settingsView()}</div></main></div><div id="toast" class="toast"></div>`;
+};
 
 const openModal = (content: string) => { document.body.insertAdjacentHTML('beforeend', overviewModal(content)); };
 const closeModal = () => document.querySelector('.modal-backdrop')?.remove();
@@ -96,6 +108,7 @@ document.addEventListener('click', async (event) => {
   if (view) { activeView = view; render(); return; }
   const action = target.closest<HTMLElement>('[data-action]')?.dataset.action;
   if (!action) { if (target.matches('[data-close]')) closeModal(); return; }
+  if (action === 'sign-out') { await signOut(); return; }
   if (action === 'add-player') playerForm();
   else if (action === 'add-fine') fineForm();
   else if (action === 'add-transaction') transactionForm();
@@ -121,6 +134,7 @@ document.addEventListener('click', async (event) => {
 
 document.addEventListener('change', (event) => { const target = event.target as HTMLSelectElement; if (target.name === 'typeId') { const type = data.fineTypes.find((entry) => entry.id === target.value); const form = target.closest('form'); if (type && form) { (form.elements.namedItem('description') as HTMLInputElement).value = type.description; (form.elements.namedItem('amount') as HTMLInputElement).value = moneyInput(type.amountCents); } } });
 document.addEventListener('submit', async (event) => { event.preventDefault(); const form = event.target as HTMLFormElement; const values = new FormData(form);
+  if (form.id === 'login-form') { const email = String(values.get('email') ?? '').trim(); if (!email) return; loginBusy = true; authError = ''; authMessage = ''; render(); try { await requestMagicLink(email, window.location.href); authMessage = 'Revisa tu correo para continuar.'; } catch (error) { authError = error instanceof Error ? error.message : 'No se pudo enviar el enlace de acceso'; } finally { loginBusy = false; render(); } return; }
   if (form.id === 'player-form') { const name = String(values.get('name') ?? '').trim(); if (!name) return; data.players.push({ id: uid(), name, active: true }); closeModal(); activeView = 'players'; await persist('Jugador añadido'); }
   if (form.id === 'type-form') { const description = String(values.get('description') ?? '').trim(); const amountCents = parseAmount(String(values.get('amount') ?? '')); const typeId = String(values.get('typeId') ?? ''); if (!description || !amountCents) return showToast('Introduce una descripción y un importe válido'); const existing = data.fineTypes.find((type) => type.id === typeId); if (existing) { existing.description = description; existing.amountCents = amountCents; } else data.fineTypes.push({ id: uid(), description, amountCents }); closeModal(); activeView = 'settings'; await persist(existing ? 'Regla actualizada' : 'Regla guardada'); }
   if (form.id === 'fine-form') { const description = String(values.get('description') ?? '').trim(); const amountCents = parseAmount(String(values.get('amount') ?? '')); const playerId = String(values.get('playerId') ?? ''); const date = String(values.get('date') ?? ''); if (!description || !amountCents || !playerId || !date) return showToast('Completa todos los campos'); const fine: Fine = { id: uid(), playerId, description, baseAmountCents: amountCents, date, status: 'pending', surchargeWeeks: 0, surchargeApplications: [] }; const updated = createFineWithBalance(data, fine); const consumed = updated.balanceMovements.length - data.balanceMovements.length; const createdFine = updated.fines.at(-1)!; data = updated; closeModal(); activeView = 'fines'; await persist(consumed ? (createdFine.status === 'paid' ? 'Multa pagada con saldo' : `Saldo aplicado; queda ${euros(currentAmount(createdFine, data.settings))} pendiente`) : 'Multa registrada'); }
@@ -129,5 +143,20 @@ document.addEventListener('submit', async (event) => { event.preventDefault(); c
   if (form.id === 'settings-form') { const teamName = String(values.get('teamName') ?? '').trim(); const weeklySurchargeCents = parseAmount(String(values.get('weeklySurcharge') ?? '')); const surchargePeriodDays = Number(values.get('surchargePeriodDays')); if (!teamName || !weeklySurchargeCents || !Number.isInteger(surchargePeriodDays) || surchargePeriodDays <= 0) return showToast('Revisa el nombre, el recargo y el período en días'); data.settings = { teamName, weeklySurchargeCents, surchargePeriodDays, lateFeesEnabled: values.get('lateFeesEnabled') === 'on' }; await persist('Configuración guardada'); }
 });
 
-const init = async () => { data = await load(); await save(data); render(); if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => undefined); };
-init().catch(() => { app.innerHTML = '<main class="error-screen"><h1>No se pudo abrir el almacenamiento local</h1><p>Comprueba que el navegador permite datos para esta aplicación.</p></main>'; });
+const init = async () => {
+  if (isSupabaseConfigured) {
+    authState = await getAuthState();
+    authLoading = false;
+    subscribeToAuth(async (state) => {
+      authState = state;
+      authError = '';
+      authMessage = '';
+      if (state.user) { data = await load(); await save(data); }
+      render();
+    });
+  }
+  if (!isSupabaseConfigured || authState.user) { data = await load(); await save(data); }
+  render();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => undefined);
+};
+init().catch(() => { authLoading = false; app.innerHTML = '<main class="error-screen"><h1>No se pudo abrir la aplicación</h1><p>Comprueba la configuración de Supabase y que el navegador permite datos para esta aplicación.</p></main>'; });

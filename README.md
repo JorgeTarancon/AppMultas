@@ -1,6 +1,6 @@
 # Cuenta Clara
 
-PWA local para gestionar las multas de un equipo de fútbol desde un único dispositivo. Los jugadores no necesitan cuentas ni iniciar sesión.
+PWA para gestionar las multas de un equipo de fútbol. Puede funcionar en modo local o con colaboración multiusuario mediante Supabase, PostgreSQL y autenticación por enlace mágico.
 
 ## Funcionalidades
 
@@ -14,7 +14,11 @@ PWA local para gestionar las multas de un equipo de fútbol desde un único disp
 - Eliminar multas pendientes creadas por error o multas pagadas del histórico, siempre con confirmación.
 - Consultar total pendiente, total recaudado y ranking por jugador.
 - Generar un mensaje agrupado por jugador para compartirlo por WhatsApp.
-- Continuar usando los datos sin conexión después de la primera carga.
+- Gestionar equipos con roles `owner`, `editor` y `viewer`.
+- Invitar miembros mediante un enlace copiable y aceptar invitaciones desde la aplicación.
+- Sincronizar cambios del equipo activo mediante Supabase Realtime.
+- Registrar operaciones relevantes en una auditoría visible para el equipo.
+- Mantener una caché local por equipo para mejorar la carga inicial.
 
 ## Requisitos
 
@@ -33,19 +37,21 @@ Vite mostrará una dirección local, normalmente `http://localhost:5173/`.
 
 ## Preparar colaboración con Supabase
 
-La base de colaboración está preparada, pero es opt-in: si no existen variables de Supabase, la aplicación continúa usando el almacenamiento local actual.
+La colaboración multiusuario requiere Supabase. Si no existen variables de Supabase, la aplicación funciona en modo local con IndexedDB.
 
 1. Copia `.env.example` como `.env`.
 2. Sustituye `VITE_SUPABASE_URL` por la URL del proyecto Supabase.
 3. Sustituye `VITE_SUPABASE_ANON_KEY` por la clave pública `anon` del proyecto.
-4. Ejecuta `supabase/migrations/0001_collaboration_foundation.sql`, `0002_allow_team_creation.sql`, `0003_fix_create_team_rpc.sql`, `0004_atomic_finance_operations.sql`, `0005_member_invitations.sql`, `0006_atomic_balance_transactions.sql`, `0007_fix_member_invitation_rpc.sql`, `0008_enable_pgcrypto_for_invitations.sql`, `0009_atomic_players.sql`, `0010_atomic_fine_types.sql`, `0011_atomic_team_settings.sql`, `0012_atomic_deletions.sql`, `0013_fix_player_and_fine_type_rpc_columns.sql` y `0014_fix_player_status_rpc.sql` desde el SQL Editor de Supabase.
+4. Ejecuta, en orden, las migraciones `0001` a `0014` de `supabase/migrations/` desde el SQL Editor de Supabase.
 5. En Authentication > URL Configuration, añade la URL de desarrollo y la URL de producción como destinos permitidos.
 6. Configura el proveedor de email de Supabase para poder enviar enlaces mágicos.
 7. Reinicia Vite después de crear o modificar `.env`.
 
 No introduzcas claves `service_role` en `.env` del frontend ni en el código cliente. La clave `anon` está diseñada para usarse junto con las políticas RLS de la base de datos.
 
-La interfaz autenticada usa PostgreSQL como fuente de verdad para la configuración, jugadores, catálogo, multas, recargos, transacciones y movimientos de saldo. IndexedDB solo se utiliza cuando Supabase no está configurado; no se migran los datos locales al backend. Los cambios del equipo activo se recargan mediante Realtime.
+La interfaz autenticada usa PostgreSQL como fuente de verdad para la configuración, jugadores, catálogo, multas, recargos, transacciones y movimientos de saldo. Las operaciones principales se ejecutan mediante RPCs atómicas e idempotentes. IndexedDB conserva únicamente una caché por equipo y no se migran los datos locales al backend. No se implementa una cola offline de operaciones: los cambios necesitan conexión con Supabase.
+
+El propietario puede gestionar miembros y sus roles desde la configuración. Las invitaciones generan un enlace copiable; la aplicación no envía automáticamente el correo de invitación. La actividad relevante se registra en `audit_log` y se muestra en la sección de auditoría reciente.
 
 Para que el servidor sea accesible desde otros dispositivos de la red:
 
@@ -84,24 +90,30 @@ La extensión Live Preview de VS Code sirve archivos estáticos, pero no transpi
 5. Marca la multa como pagada cuando se cobre el importe completo.
 6. Usa **Compartir** para generar el mensaje agrupado por jugador.
 
+Para trabajar con un equipo compartido, solicita un enlace mágico de acceso, crea o selecciona un equipo y usa **Configuración** para invitar miembros. Los lectores pueden consultar los datos, mientras que los editores pueden realizar operaciones de gestión; el propietario administra miembros y roles.
+
 El importe de una multa pagada queda fijado en el momento del pago. Cambiar posteriormente el recargo semanal no modifica el histórico.
 
 ## Datos y privacidad
 
-Los datos se guardan únicamente en IndexedDB del navegador del dispositivo. No hay backend, cuentas, sincronización ni envío automático de información a un servidor.
+En modo colaborativo, los datos del equipo se almacenan en PostgreSQL mediante Supabase y están protegidos por políticas RLS. La aplicación cliente solo usa la clave pública `anon`; nunca debe incluir una clave `service_role`. La caché IndexedDB se guarda por equipo en el navegador y no sustituye al backend.
 
-Esto implica que borrar los datos del navegador o cambiar de dispositivo puede hacer que se pierda la información. La exportación e importación de copias de seguridad queda como mejora futura.
+En modo local, los datos se guardan en IndexedDB del navegador. Borrar los datos del navegador puede eliminar esa información local. No existe migración automática de los datos locales al backend.
 
 El botón de WhatsApp utiliza la función nativa de compartir cuando está disponible. Si no lo está, copia el mensaje y abre una alternativa web.
 
 ## Arquitectura
 
 ```text
-src/main.ts      Interfaz y eventos de la aplicación
-src/domain.ts    Modelo, recargos, contabilidad y mensaje de WhatsApp
-src/storage.ts   Persistencia local con IndexedDB
-src/styles.css   Diseño responsive
-public/sw.js     Caché básica para uso offline
+src/main.ts              Interfaz, autenticación, equipos y eventos
+src/domain.ts            Modelo, recargos, contabilidad y mensaje de WhatsApp
+src/collaboration.ts     Equipos, miembros, invitaciones, auditoría y Realtime
+src/remoteRepository.ts  Lectura y mutaciones PostgreSQL mediante Supabase
+src/storage.ts           Caché local por equipo y modo IndexedDB
+src/supabase.ts          Cliente Supabase y sesión de autenticación
+src/styles.css           Diseño responsive
+supabase/migrations/     Esquema, RLS, RPCs, auditoría e invitaciones
+public/sw.js             Caché básica de la PWA
 ```
 
 ## Verificación
@@ -112,8 +124,8 @@ Comprobar tipos sin iniciar el bundler:
 npx tsc --noEmit
 ```
 
-La suite de pruebas automatizadas y la validación visual multidispositivo están previstas como próximos pasos.
+La validación actual incluye comprobación de tipos y del formato del diff. La prueba final de colaboración debe realizarse con dos cuentas reales en Supabase, verificando roles, sincronización, invitaciones y auditoría.
 
 ## Estado del proyecto
 
-Versión inicial en desarrollo. La gestión principal está implementada, pero todavía no se incluye exportación/importación de copias de seguridad ni sincronización entre dispositivos.
+La gestión multiusuario está implementada con PostgreSQL como fuente de verdad, roles, invitaciones por enlace, sincronización Realtime y auditoría. La cola offline de operaciones, el envío automático de invitaciones por email y la exportación/importación de copias de seguridad quedan fuera del alcance actual.

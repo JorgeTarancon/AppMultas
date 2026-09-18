@@ -36,6 +36,10 @@ let teamLoading = false;
 let teamError = '';
 let unsubscribeTeam: () => void = () => undefined;
 
+const activeTeamStorageKey = () => authState.user ? `cuenta-clara:active-team:${authState.user.id}` : 'cuenta-clara:active-team';
+const getStoredTeamId = () => localStorage.getItem(activeTeamStorageKey());
+const storeActiveTeam = (teamId: string) => localStorage.setItem(activeTeamStorageKey(), teamId);
+
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]!));
 const errorMessage = (error: unknown, fallback: string) => {
@@ -162,7 +166,10 @@ const loadTeams = async () => {
   render();
   try {
     teams = await listTeams();
-    if (teams[0]) await selectTeam(teams[0]);
+    const storedTeamId = getStoredTeamId();
+    const storedTeam = storedTeamId ? teams.find((team) => team.id === storedTeamId) : undefined;
+    if (storedTeam) await selectTeam(storedTeam);
+    else if (teams[0]) await selectTeam(teams[0]);
   } catch (error) {
     teamError = error instanceof Error ? error.message : 'No se pudieron cargar los equipos';
   } finally {
@@ -188,6 +195,7 @@ const selectTeam = async (team: Team) => {
     unsubscribeTeam = subscribeToTeamChanges(team.id, async () => {
       try { data = await loadRemoteData(team.id); teamMembers = await listTeamMembers(team.id); auditEvents = await listAuditEvents(team.id); await saveTeamSnapshot(team.id, data); syncStatus = 'synced'; render(); } catch (error) { syncStatus = 'error'; teamError = error instanceof Error ? error.message : 'No se pudieron actualizar los datos'; render(); }
     });
+    storeActiveTeam(team.id);
   } catch (error) {
     const cached = await loadTeamSnapshot(team.id).catch(() => null);
     if (cached) { activeTeam = team; data = cached; syncStatus = 'offline'; teamError = 'Mostrando la última copia local; no se pudo conectar con PostgreSQL'; }

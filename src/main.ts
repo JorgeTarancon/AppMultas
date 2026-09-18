@@ -7,10 +7,10 @@ const membersPanel = () => {
 
 import './styles.css';
 import { AppData, applySurcharge, balanceForPlayer, createBalanceDeposit, createFineWithBalance, createTransaction, currentAmount, euros, Fine, formatDate, isSurchargeDue, parseAmount, surchargeCount, summary, today, Transaction, uid, whatsappMessage } from './domain';
-import { load, save } from './storage';
+import { load, loadTeamSnapshot, save, saveTeamSnapshot } from './storage';
 import { AuthState, getAuthState, isSupabaseConfigured, requestMagicLink, signOut, subscribeToAuth } from './supabase';
 import { acceptTeamInvitation, changeTeamMemberRole, createTeam, inviteTeamMember, listTeamMembers, listTeams, removeTeamMember, subscribeToTeamChanges, Team, TeamMember, TeamRole } from './collaboration';
-import { applySurchargeRemote, createBalanceDepositRemote, createFineRemote, createFineTypeRemote, createPlayerRemote, createTransactionRemote, deleteFineTypeRemote, deletePlayerRemote, loadRemoteData, markFinePaidRemote, saveRemoteData, setPlayerActiveRemote, updateFineTypeRemote, updateTeamSettingsRemote } from './remoteRepository';
+import { applySurchargeRemote, createBalanceDepositRemote, createFineRemote, createFineTypeRemote, createPlayerRemote, createTransactionRemote, deleteFineRemote, deleteFineTypeRemote, deletePlayerRemote, deleteTransactionRemote, loadRemoteData, markFinePaidRemote, saveRemoteData, setPlayerActiveRemote, updateFineTypeRemote, updateTeamSettingsRemote } from './remoteRepository';
 
 let data: AppData;
 let activeView = 'overview';
@@ -24,6 +24,7 @@ let teams: Team[] = [];
 let activeTeam: Team | null = null;
 let activeRole: TeamRole = 'viewer';
 let teamMembers: TeamMember[] = [];
+let syncStatus: 'syncing' | 'synced' | 'offline' | 'error' = isSupabaseConfigured ? 'syncing' : 'offline';
 let teamLoading = false;
 let teamError = '';
 let unsubscribeTeam: () => void = () => undefined;
@@ -62,8 +63,11 @@ const loginView = () => `<main class="login-screen"><section class="login-panel"
 const teamView = () => `<main class="login-screen"><section class="login-panel team-panel"><div class="brand login-brand"><div class="brand-mark">CC</div><div><strong>Cuenta Clara</strong><span>Control de equipo</span></div></div><span class="eyebrow">EQUIPOS DISPONIBLES</span><h1>Elige tu equipo</h1><p>Selecciona un equipo existente o crea uno nuevo para empezar a colaborar.</p>${teams.length ? `<div class="team-list">${teams.map((team) => `<button class="team-option" data-team-id="${team.id}"><strong>${escapeHtml(team.name)}</strong><span>Equipo compartido</span></button>`).join('')}</div>` : ''}<form id="team-form" class="login-form"><label>${teams.length ? 'Crear otro equipo' : 'Nombre del equipo'}<input name="teamName" required maxlength="120" placeholder="Ej. Los del martes" /></label><button class="button primary" type="submit" ${teamLoading ? 'disabled' : ''}>${teamLoading ? 'Creando...' : 'Crear equipo'}</button>${teamError ? `<div class="login-message error">${escapeHtml(teamError)}</div>` : ''}</form><button class="text-button team-signout" data-action="sign-out">Cerrar sesión</button></section></main>`;
 
 const persist = async (message?: string) => {
-  if (isSupabaseConfigured && activeTeam) await saveRemoteData(activeTeam.id, data);
-  else await save(data);
+  if (isSupabaseConfigured && activeTeam) {
+    syncStatus = 'syncing';
+    render();
+    try { await saveRemoteData(activeTeam.id, data); await saveTeamSnapshot(activeTeam.id, data); syncStatus = 'synced'; } catch (error) { syncStatus = 'error'; throw error; }
+  } else await save(data);
   render();
   if (message) showToast(message);
 };
@@ -76,7 +80,7 @@ const navItem = (id: string, label: string, iconName: string) => `<button class=
 
 const renderSidebar = () => `<aside class="sidebar">
   <div class="brand"><div class="brand-mark">CC</div><div><strong>Cuenta Clara</strong><span>Control de equipo</span></div></div>
-  <div class="team-switcher"><span class="eyebrow">EQUIPO ACTIVO</span><strong>${escapeHtml(data.settings.teamName)}</strong><span class="status-dot">● Guardado en PostgreSQL · ${activeRole}</span><button class="team-change-button" data-action="manage-teams">Cambiar equipo</button></div>
+  <div class="team-switcher"><span class="eyebrow">EQUIPO ACTIVO</span><strong>${escapeHtml(data.settings.teamName)}</strong><span class="status-dot">● ${syncStatus === 'synced' ? 'Sincronizado' : syncStatus === 'syncing' ? 'Sincronizando...' : syncStatus === 'offline' ? 'Sin conexión' : 'Error de sincronización'} · ${activeRole}</span><button class="team-change-button" data-action="manage-teams">Cambiar equipo</button></div>
   <nav><span class="nav-heading">MENÚ PRINCIPAL</span>${navItem('overview', 'Resumen', 'dashboard')}${navItem('players', 'Jugadores', 'users')}${navItem('fines', 'Multas', 'book')}<span class="nav-heading spaced">CONFIGURACIÓN</span>${navItem('settings', 'Equipo y recargos', 'settings')}</nav>
   <div class="sidebar-foot"><span class="local-badge">⌁</span><div><strong>${isSupabaseConfigured ? 'Sesión activa' : 'Modo local'}</strong><small>${isSupabaseConfigured ? escapeHtml(authState.user?.email ?? '') : 'Tus datos no salen del dispositivo'}</small></div>${isSupabaseConfigured ? '<button class="logout-button" data-action="sign-out">Cerrar sesión</button>' : ''}</div>
 </aside>`;
@@ -150,16 +154,20 @@ const selectTeam = async (team: Team) => {
   render();
   try {
     const remoteData = await loadRemoteData(team.id);
+    await saveTeamSnapshot(team.id, remoteData);
+    syncStatus = 'synced';
     teamMembers = await listTeamMembers(team.id);
     activeRole = teamMembers.find((member) => member.user_id === authState.user?.id)?.role ?? 'viewer';
     unsubscribeTeam();
     activeTeam = team;
     data = remoteData;
     unsubscribeTeam = subscribeToTeamChanges(team.id, async () => {
-      try { data = await loadRemoteData(team.id); teamMembers = await listTeamMembers(team.id); render(); } catch (error) { teamError = error instanceof Error ? error.message : 'No se pudieron actualizar los datos'; render(); }
+      try { data = await loadRemoteData(team.id); teamMembers = await listTeamMembers(team.id); await saveTeamSnapshot(team.id, data); syncStatus = 'synced'; render(); } catch (error) { syncStatus = 'error'; teamError = error instanceof Error ? error.message : 'No se pudieron actualizar los datos'; render(); }
     });
   } catch (error) {
-    teamError = error instanceof Error ? error.message : 'No se pudo cargar el equipo';
+    const cached = await loadTeamSnapshot(team.id).catch(() => null);
+    if (cached) { activeTeam = team; data = cached; syncStatus = 'offline'; teamError = 'Mostrando la última copia local; no se pudo conectar con PostgreSQL'; }
+    else { syncStatus = 'error'; teamError = error instanceof Error ? error.message : 'No se pudo cargar el equipo'; }
   } finally {
     teamLoading = false;
     render();
@@ -208,8 +216,8 @@ document.addEventListener('click', async (event) => {
   else if (action.startsWith('delete-type:')) { const type = data.fineTypes.find((entry) => entry.id === action.split(':')[1]); if (type) confirmAction('¿Eliminar esta regla?', `${type.description} · ${euros(type.amountCents)}. Las multas ya registradas no cambiarán.`, `confirm-delete-type:${type.id}`); }
   else if (action.startsWith('confirm-pay:')) { const fineId = action.split(':')[1]; const fine = data.fines.find((entry) => entry.id === fineId); if (fine) { closeModal(); if (isSupabaseConfigured && activeTeam) { await markFinePaidRemote(activeTeam.id, fineId); data = await loadRemoteData(activeTeam.id); render(); showToast('Pago registrado'); } else { const remaining = currentAmount(fine, data.settings); fine.paidAmountCents = (fine.paidAmountCents ?? 0) + remaining; fine.finalAmountCents = fine.paidAmountCents; fine.status = 'paid'; fine.paidAt = today(); await persist('Pago registrado'); } } }
   else if (action.startsWith('confirm-apply-surcharge:')) { const fineId = action.split(':')[1]; closeModal(); if (isSupabaseConfigured && activeTeam) { await applySurchargeRemote(activeTeam.id, fineId); data = await loadRemoteData(activeTeam.id); render(); showToast('Recargo aplicado'); } else { const updated = applySurcharge(data, fineId); if (!updated) { showToast('El período de recargo todavía no ha vencido'); return; } data = updated; await persist('Recargo aplicado'); } }
-  else if (action.startsWith('confirm-delete-fine:')) { data.fines = data.fines.filter((fine) => fine.id !== action.split(':')[1]); closeModal(); await persist('Multa eliminada'); }
-  else if (action.startsWith('confirm-delete-transaction:')) { data.transactions = data.transactions.filter((transaction) => transaction.id !== action.split(':')[1]); closeModal(); await persist('Movimiento eliminado'); }
+  else if (action.startsWith('confirm-delete-fine:')) { const fineId = action.split(':')[1]; closeModal(); if (isSupabaseConfigured && activeTeam) { try { await deleteFineRemote(activeTeam.id, fineId); data = await loadRemoteData(activeTeam.id); render(); showToast('Multa eliminada'); } catch (error) { showToast(errorMessage(error, 'No se pudo eliminar la multa')); } } else { data.fines = data.fines.filter((fine) => fine.id !== fineId); await persist('Multa eliminada'); } }
+  else if (action.startsWith('confirm-delete-transaction:')) { const transactionId = action.split(':')[1]; closeModal(); if (isSupabaseConfigured && activeTeam) { try { await deleteTransactionRemote(activeTeam.id, transactionId); data = await loadRemoteData(activeTeam.id); render(); showToast('Movimiento eliminado'); } catch (error) { showToast(errorMessage(error, 'No se pudo eliminar el movimiento')); } } else { data.transactions = data.transactions.filter((transaction) => transaction.id !== transactionId); await persist('Movimiento eliminado'); } }
   else if (action.startsWith('confirm-delete-player:')) { const playerId = action.split(':')[1]; closeModal(); if (isSupabaseConfigured && activeTeam) { try { await deletePlayerRemote(activeTeam.id, playerId); data = await loadRemoteData(activeTeam.id); render(); showToast('Jugador eliminado'); } catch (error) { showToast(errorMessage(error, 'No se pudo eliminar el jugador')); } } else { data.players = data.players.filter((player) => player.id !== playerId); await persist('Jugador eliminado'); } }
   else if (action.startsWith('confirm-deactivate-player:')) { const playerId = action.split(':')[1]; closeModal(); if (isSupabaseConfigured && activeTeam) { try { await setPlayerActiveRemote(activeTeam.id, playerId, false); data = await loadRemoteData(activeTeam.id); render(); showToast('Jugador desactivado'); } catch (error) { showToast(errorMessage(error, 'No se pudo desactivar el jugador')); } } else { const player = data.players.find((entry) => entry.id === playerId); if (player) { player.active = false; await persist('Jugador desactivado'); } } }
   else if (action.startsWith('confirm-delete-type:')) { const typeId = action.split(':')[1]; closeModal(); if (isSupabaseConfigured && activeTeam) { try { await deleteFineTypeRemote(activeTeam.id, typeId); data = await loadRemoteData(activeTeam.id); render(); showToast('Regla eliminada'); } catch (error) { showToast(errorMessage(error, 'No se pudo eliminar la regla')); } } else { data.fineTypes = data.fineTypes.filter((type) => type.id !== typeId); await persist('Regla eliminada'); } }

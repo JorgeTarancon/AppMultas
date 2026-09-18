@@ -93,3 +93,21 @@ const normalizeBalanceMovement = (value: unknown): BalanceMovement | null => {
   if (amountCents <= 0 || !value.description.trim()) return null;
   return { id: value.id, playerId: value.playerId, type: value.type, amountCents, description: value.description.trim(), date: value.date, createdAt: value.createdAt, ...(typeof value.fineId === 'string' ? { fineId: value.fineId } : {}) };
 };
+
+export const loadTeamSnapshot = async (teamId: string): Promise<AppData | null> => {
+  const db = await open();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(STORE).objectStore(STORE).get(`team:${teamId}`);
+    request.onsuccess = () => resolve(request.result ? normalizeData(request.result) : null);
+    request.onerror = () => reject(request.error);
+  });
+};
+
+export const saveTeamSnapshot = async (teamId: string, data: AppData) => {
+  const db = await open();
+  return new Promise<void>((resolve, reject) => {
+    const request = db.transaction(STORE, 'readwrite').objectStore(STORE).put(data, `team:${teamId}`);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+};

@@ -38,7 +38,7 @@ La base de colaboración está preparada, pero es opt-in: si no existen variable
 1. Copia `.env.example` como `.env`.
 2. Sustituye `VITE_SUPABASE_URL` por la URL del proyecto Supabase.
 3. Sustituye `VITE_SUPABASE_ANON_KEY` por la clave pública `anon` del proyecto.
-4. Ejecuta `supabase/migrations/0001_collaboration_foundation.sql`, `0002_allow_team_creation.sql`, `0003_fix_create_team_rpc.sql`, `0004_atomic_finance_operations.sql`, `0005_member_invitations.sql`, `0006_atomic_balance_transactions.sql`, `0007_fix_member_invitation_rpc.sql`, `0008_enable_pgcrypto_for_invitations.sql`, `0009_atomic_players.sql`, `0010_atomic_fine_types.sql` y `0011_atomic_team_settings.sql` desde el SQL Editor de Supabase.
+4. Ejecuta `supabase/migrations/0001_collaboration_foundation.sql`, `0002_allow_team_creation.sql`, `0003_fix_create_team_rpc.sql`, `0004_atomic_finance_operations.sql`, `0005_member_invitations.sql`, `0006_atomic_balance_transactions.sql`, `0007_fix_member_invitation_rpc.sql`, `0008_enable_pgcrypto_for_invitations.sql`, `0009_atomic_players.sql`, `0010_atomic_fine_types.sql`, `0011_atomic_team_settings.sql` y `0012_atomic_deletions.sql` desde el SQL Editor de Supabase.
 5. En Authentication > URL Configuration, añade la URL de desarrollo y la URL de producción como destinos permitidos.
 6. Configura el proveedor de email de Supabase para poder enviar enlaces mágicos.
 7. Reinicia Vite después de crear o modificar `.env`.

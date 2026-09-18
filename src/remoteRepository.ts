@@ -179,3 +179,5 @@ export const createFineTypeRemote = async (teamId: string, type: { id: string; d
 export const updateFineTypeRemote = async (teamId: string, type: { id: string; description: string; amountCents: number }) => callFinanceRpc('update_fine_type', { p_team_id: teamId, p_id: type.id, p_description: type.description, p_amount_cents: type.amountCents });
 export const deleteFineTypeRemote = async (teamId: string, typeId: string) => callFinanceRpc('delete_fine_type', { p_team_id: teamId, p_id: typeId });
 export const updateTeamSettingsRemote = async (teamId: string, settings: { teamName: string; lateFeesEnabled: boolean; weeklySurchargeCents: number; surchargePeriodDays: number }) => callFinanceRpc('update_team_settings', { p_team_id: teamId, p_name: settings.teamName, p_settings: settings });
+export const deleteFineRemote = async (teamId: string, fineId: string) => callFinanceRpc('delete_fine', { p_team_id: teamId, p_fine_id: fineId });
+export const deleteTransactionRemote = async (teamId: string, transactionId: string) => callFinanceRpc('delete_team_transaction', { p_team_id: teamId, p_transaction_id: transactionId });

@@ -37,21 +37,19 @@ Vite mostrará una dirección local, normalmente `http://localhost:5173/`.
 
 ## Preparar colaboración con Supabase
 
-La colaboración multiusuario requiere Supabase. Si no existen variables de Supabase, la aplicación funciona en modo local con IndexedDB.
+La base de colaboración está preparada, pero es opt-in: si no existen variables de Supabase, la aplicación continúa usando el almacenamiento local actual.
 
 1. Copia `.env.example` como `.env`.
 2. Sustituye `VITE_SUPABASE_URL` por la URL del proyecto Supabase.
 3. Sustituye `VITE_SUPABASE_ANON_KEY` por la clave pública `anon` del proyecto.
-4. Ejecuta, en orden, las migraciones `0001` a `0015` de `supabase/migrations/` desde el SQL Editor de Supabase.
+4. Ejecuta el contenido de `supabase/migrations/0001_collaboration_foundation.sql` desde el SQL Editor de Supabase.
 5. En Authentication > URL Configuration, añade la URL de desarrollo y la URL de producción como destinos permitidos.
 6. Configura el proveedor de email de Supabase para poder enviar enlaces mágicos.
 7. Reinicia Vite después de crear o modificar `.env`.
 
 No introduzcas claves `service_role` en `.env` del frontend ni en el código cliente. La clave `anon` está diseñada para usarse junto con las políticas RLS de la base de datos.
 
-La interfaz autenticada usa PostgreSQL como fuente de verdad para la configuración, jugadores, catálogo, multas, recargos, transacciones y movimientos de saldo. Las operaciones principales se ejecutan mediante RPCs atómicas e idempotentes. IndexedDB conserva únicamente una caché por equipo y no se migran los datos locales al backend. No se implementa una cola offline de operaciones: los cambios necesitan conexión con Supabase.
-
-El propietario puede gestionar miembros y sus roles desde la configuración, y eliminar definitivamente sus equipos desde la pantalla de selección. Las invitaciones generan un enlace copiable; la aplicación no envía automáticamente el correo de invitación. La actividad relevante se registra en `audit_log` y se muestra en la sección de auditoría reciente.
+La integración inicial expone el cliente y las operaciones base en `src/supabase.ts` y `src/collaboration.ts`. La interfaz todavía no cambia automáticamente al modo multiusuario hasta completar el flujo de sesión, migración y sincronización descrito en la propuesta OpenSpec.
 
 Para que el servidor sea accesible desde otros dispositivos de la red:
 

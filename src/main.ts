@@ -55,7 +55,7 @@ const navItem = (id: string, label: string, iconName: string) => `<button class=
 
 const renderSidebar = () => `<aside class="sidebar">
   <div class="brand"><div class="brand-mark">CC</div><div><strong>Cuenta Clara</strong><span>Control de equipo</span></div></div>
-  <div class="team-switcher"><span class="eyebrow">EQUIPO ACTIVO</span><strong>${escapeHtml(data.settings.teamName)}</strong><span class="status-dot">● Guardado en este dispositivo</span></div>
+  <div class="team-switcher"><span class="eyebrow">EQUIPO ACTIVO</span><strong>${escapeHtml(data.settings.teamName)}</strong><span class="status-dot">● Guardado en PostgreSQL</span><button class="team-change-button" data-action="manage-teams">Cambiar equipo</button></div>
   <nav><span class="nav-heading">MENÚ PRINCIPAL</span>${navItem('overview', 'Resumen', 'dashboard')}${navItem('players', 'Jugadores', 'users')}${navItem('fines', 'Multas', 'book')}<span class="nav-heading spaced">CONFIGURACIÓN</span>${navItem('settings', 'Equipo y recargos', 'settings')}</nav>
   <div class="sidebar-foot"><span class="local-badge">⌁</span><div><strong>${isSupabaseConfigured ? 'Sesión activa' : 'Modo local'}</strong><small>${isSupabaseConfigured ? escapeHtml(authState.user?.email ?? '') : 'Tus datos no salen del dispositivo'}</small></div>${isSupabaseConfigured ? '<button class="logout-button" data-action="sign-out">Cerrar sesión</button>' : ''}</div>
 </aside>`;
@@ -101,7 +101,7 @@ const render = () => {
   if (isSupabaseConfigured && authLoading) { app.innerHTML = '<main class="login-screen"><div class="login-loading">Comprobando sesión...</div></main>'; return; }
   if (isSupabaseConfigured && !authState.user) { app.innerHTML = loginView(); return; }
   if (isSupabaseConfigured && !activeTeam) { app.innerHTML = teamView(); return; }
-  app.innerHTML = `<div class="app-shell">${renderSidebar()}<main class="main-content"><div class="mobile-top"><div class="brand-mark">CC</div><strong>Cuenta Clara</strong>${isSupabaseConfigured ? '<button class="logout-button mobile-logout" data-action="sign-out">Cerrar sesión</button>' : ''}<button class="icon-button" data-view="settings">${icon('settings')}</button></div><div class="content-wrap">${activeView === 'overview' ? dashboard() : activeView === 'players' ? playersView() : activeView === 'fines' ? finesView() : settingsView()}</div></main></div><div id="toast" class="toast"></div>`;
+  app.innerHTML = `<div class="app-shell">${renderSidebar()}<main class="main-content"><div class="mobile-top"><div class="brand-mark">CC</div><strong>Cuenta Clara</strong>${isSupabaseConfigured ? '<button class="logout-button mobile-logout" data-action="sign-out">Cerrar sesión</button><button class="logout-button" data-action="manage-teams">Cambiar equipo</button>' : ''}<button class="icon-button" data-view="settings">${icon('settings')}</button></div><div class="content-wrap">${activeView === 'overview' ? dashboard() : activeView === 'players' ? playersView() : activeView === 'fines' ? finesView() : settingsView()}</div></main></div><div id="toast" class="toast"></div>`;
 };
 
 const loadTeams = async () => {
@@ -161,6 +161,7 @@ document.addEventListener('click', async (event) => {
   const action = target.closest<HTMLElement>('[data-action]')?.dataset.action;
   if (!action) { if (target.matches('[data-close]')) closeModal(); return; }
   if (action === 'sign-out') { await signOut(); return; }
+  if (action === 'manage-teams') { activeTeam = null; render(); return; }
   if (action === 'add-player') playerForm();
   else if (action === 'add-fine') fineForm();
   else if (action === 'add-transaction') transactionForm();

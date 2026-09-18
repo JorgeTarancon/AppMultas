@@ -171,3 +171,11 @@ export const createTransactionRemote = async (teamId: string, transaction: { id:
   p_description: transaction.description,
   p_date: transaction.date,
 });
+
+export const createPlayerRemote = async (teamId: string, player: { id: string; name: string }) => callFinanceRpc('create_player', { p_team_id: teamId, p_id: player.id, p_name: player.name });
+export const setPlayerActiveRemote = async (teamId: string, playerId: string, active: boolean) => callFinanceRpc('set_player_active', { p_team_id: teamId, p_player_id: playerId, p_active: active });
+export const deletePlayerRemote = async (teamId: string, playerId: string) => callFinanceRpc('delete_player', { p_team_id: teamId, p_player_id: playerId });
+export const createFineTypeRemote = async (teamId: string, type: { id: string; description: string; amountCents: number }) => callFinanceRpc('create_fine_type', { p_team_id: teamId, p_id: type.id, p_description: type.description, p_amount_cents: type.amountCents });
+export const updateFineTypeRemote = async (teamId: string, type: { id: string; description: string; amountCents: number }) => callFinanceRpc('update_fine_type', { p_team_id: teamId, p_id: type.id, p_description: type.description, p_amount_cents: type.amountCents });
+export const deleteFineTypeRemote = async (teamId: string, typeId: string) => callFinanceRpc('delete_fine_type', { p_team_id: teamId, p_id: typeId });
+export const updateTeamSettingsRemote = async (teamId: string, settings: { teamName: string; lateFeesEnabled: boolean; weeklySurchargeCents: number; surchargePeriodDays: number }) => callFinanceRpc('update_team_settings', { p_team_id: teamId, p_name: settings.teamName, p_settings: settings });

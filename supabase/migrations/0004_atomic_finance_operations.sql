@@ -46,7 +46,7 @@ begin
   insert into public.fines (id, team_id, player_id, description, base_amount_cents, date, status, paid_amount_cents, final_amount_cents, paid_at, created_by, updated_by)
   values (
     p_fine_id, p_team_id, p_player_id, trim(p_description), p_base_amount_cents,
-    p_date, case when consumed_cents = p_base_amount_cents then 'paid' else 'pending' end,
+    p_date, (case when consumed_cents = p_base_amount_cents then 'paid' else 'pending' end)::public.fine_status,
     consumed_cents, case when consumed_cents = p_base_amount_cents then p_base_amount_cents else null end,
     case when consumed_cents = p_base_amount_cents then p_date else null end,
     current_user_id, current_user_id

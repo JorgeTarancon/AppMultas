@@ -2,8 +2,8 @@ import './styles.css';
 import { AppData, applySurcharge, balanceForPlayer, createBalanceDeposit, createFineWithBalance, createTransaction, currentAmount, euros, Fine, formatDate, isSurchargeDue, parseAmount, surchargeCount, summary, today, Transaction, uid, whatsappMessage } from './domain';
 import { load, save } from './storage';
 import { AuthState, getAuthState, isSupabaseConfigured, requestMagicLink, signOut, subscribeToAuth } from './supabase';
-import { createTeam, listTeams, subscribeToTeamChanges, Team } from './collaboration';
-import { loadRemoteData, saveRemoteData } from './remoteRepository';
+import { createTeam, listTeamMembers, listTeams, subscribeToTeamChanges, Team, TeamRole } from './collaboration';
+import { applySurchargeRemote, createFineRemote, loadRemoteData, markFinePaidRemote, saveRemoteData } from './remoteRepository';
 
 let data: AppData;
 let activeView = 'overview';
@@ -15,6 +15,7 @@ let authMessage = '';
 let loginBusy = false;
 let teams: Team[] = [];
 let activeTeam: Team | null = null;
+let activeRole: TeamRole = 'viewer';
 let teamLoading = false;
 let teamError = '';
 let unsubscribeTeam: () => void = () => undefined;
@@ -55,13 +56,16 @@ const navItem = (id: string, label: string, iconName: string) => `<button class=
 
 const renderSidebar = () => `<aside class="sidebar">
   <div class="brand"><div class="brand-mark">CC</div><div><strong>Cuenta Clara</strong><span>Control de equipo</span></div></div>
-  <div class="team-switcher"><span class="eyebrow">EQUIPO ACTIVO</span><strong>${escapeHtml(data.settings.teamName)}</strong><span class="status-dot">● Guardado en PostgreSQL</span><button class="team-change-button" data-action="manage-teams">Cambiar equipo</button></div>
+  <div class="team-switcher"><span class="eyebrow">EQUIPO ACTIVO</span><strong>${escapeHtml(data.settings.teamName)}</strong><span class="status-dot">● Guardado en PostgreSQL · ${activeRole}</span><button class="team-change-button" data-action="manage-teams">Cambiar equipo</button></div>
   <nav><span class="nav-heading">MENÚ PRINCIPAL</span>${navItem('overview', 'Resumen', 'dashboard')}${navItem('players', 'Jugadores', 'users')}${navItem('fines', 'Multas', 'book')}<span class="nav-heading spaced">CONFIGURACIÓN</span>${navItem('settings', 'Equipo y recargos', 'settings')}</nav>
   <div class="sidebar-foot"><span class="local-badge">⌁</span><div><strong>${isSupabaseConfigured ? 'Sesión activa' : 'Modo local'}</strong><small>${isSupabaseConfigured ? escapeHtml(authState.user?.email ?? '') : 'Tus datos no salen del dispositivo'}</small></div>${isSupabaseConfigured ? '<button class="logout-button" data-action="sign-out">Cerrar sesión</button>' : ''}</div>
 </aside>`;
 
 const header = (kicker: string, title: string, subtitle: string, action = '') => `<header class="page-header"><div><span class="eyebrow">${kicker}</span><h1>${title}</h1><p>${subtitle}</p></div>${action}</header>`;
-const button = (label: string, action: string, className = 'button primary', extra = '') => `<button class="${className}" data-action="${action}" ${extra}>${label}</button>`;
+const button = (label: string, action: string, className = 'button primary', extra = '') => {
+  const readOnlyAction = activeRole === 'viewer' && /^(add-|delete-|edit-|toggle-|pay-fine:|apply-surcharge:|confirm-)/.test(action);
+  return `<button class="${className}" data-action="${action}" ${readOnlyAction ? 'disabled ' : ''}${extra}>${label}</button>`;
+};
 
 const dashboard = () => {
   const totals = summary(data);
@@ -125,6 +129,8 @@ const selectTeam = async (team: Team) => {
   render();
   try {
     const remoteData = await loadRemoteData(team.id);
+    const members = await listTeamMembers(team.id);
+    activeRole = members.find((member) => member.user_id === authState.user?.id)?.role ?? 'viewer';
     unsubscribeTeam();
     activeTeam = team;
     data = remoteData;
@@ -177,8 +183,8 @@ document.addEventListener('click', async (event) => {
   else if (action.startsWith('delete-player:')) { const player = data.players.find((entry) => entry.id === action.split(':')[1]); if (player) { const hasFines = data.fines.some((fine) => fine.playerId === player.id); confirmAction(hasFines ? '¿Desactivar este jugador?' : '¿Eliminar este jugador?', hasFines ? `${player.name} tiene multas asociadas y se conservará para proteger el histórico.` : `${player.name}. Esta acción no se puede deshacer.`, `${hasFines ? 'confirm-deactivate-player' : 'confirm-delete-player'}:${player.id}`, hasFines ? 'Desactivar jugador' : undefined); } }
   else if (action.startsWith('edit-type:')) typeForm(action.split(':')[1]);
   else if (action.startsWith('delete-type:')) { const type = data.fineTypes.find((entry) => entry.id === action.split(':')[1]); if (type) confirmAction('¿Eliminar esta regla?', `${type.description} · ${euros(type.amountCents)}. Las multas ya registradas no cambiarán.`, `confirm-delete-type:${type.id}`); }
-  else if (action.startsWith('confirm-pay:')) { const fine = data.fines.find((entry) => entry.id === action.split(':')[1]); if (fine) { const remaining = currentAmount(fine, data.settings); fine.paidAmountCents = (fine.paidAmountCents ?? 0) + remaining; fine.finalAmountCents = fine.paidAmountCents; fine.status = 'paid'; fine.paidAt = today(); closeModal(); await persist('Pago registrado'); } }
-  else if (action.startsWith('confirm-apply-surcharge:')) { const updated = applySurcharge(data, action.split(':')[1]); if (!updated) { closeModal(); showToast('El período de recargo todavía no ha vencido'); return; } data = updated; closeModal(); await persist('Recargo aplicado'); }
+  else if (action.startsWith('confirm-pay:')) { const fineId = action.split(':')[1]; const fine = data.fines.find((entry) => entry.id === fineId); if (fine) { closeModal(); if (isSupabaseConfigured && activeTeam) { await markFinePaidRemote(activeTeam.id, fineId); data = await loadRemoteData(activeTeam.id); render(); showToast('Pago registrado'); } else { const remaining = currentAmount(fine, data.settings); fine.paidAmountCents = (fine.paidAmountCents ?? 0) + remaining; fine.finalAmountCents = fine.paidAmountCents; fine.status = 'paid'; fine.paidAt = today(); await persist('Pago registrado'); } } }
+  else if (action.startsWith('confirm-apply-surcharge:')) { const fineId = action.split(':')[1]; closeModal(); if (isSupabaseConfigured && activeTeam) { await applySurchargeRemote(activeTeam.id, fineId); data = await loadRemoteData(activeTeam.id); render(); showToast('Recargo aplicado'); } else { const updated = applySurcharge(data, fineId); if (!updated) { showToast('El período de recargo todavía no ha vencido'); return; } data = updated; await persist('Recargo aplicado'); } }
   else if (action.startsWith('confirm-delete-fine:')) { data.fines = data.fines.filter((fine) => fine.id !== action.split(':')[1]); closeModal(); await persist('Multa eliminada'); }
   else if (action.startsWith('confirm-delete-transaction:')) { data.transactions = data.transactions.filter((transaction) => transaction.id !== action.split(':')[1]); closeModal(); await persist('Movimiento eliminado'); }
   else if (action.startsWith('confirm-delete-player:')) { data.players = data.players.filter((player) => player.id !== action.split(':')[1]); closeModal(); await persist('Jugador eliminado'); }
@@ -192,7 +198,7 @@ document.addEventListener('submit', async (event) => { event.preventDefault(); c
   if (form.id === 'team-form') { const name = String(values.get('teamName') ?? '').trim(); if (!name) return; teamLoading = true; teamError = ''; render(); try { const team = await createTeam(name); teams = [...teams, team]; await selectTeam(team); } catch (error) { teamError = errorMessage(error, 'No se pudo crear el equipo'); } finally { teamLoading = false; render(); } return; }
   if (form.id === 'player-form') { const name = String(values.get('name') ?? '').trim(); if (!name) return; data.players.push({ id: uid(), name, active: true }); closeModal(); activeView = 'players'; await persist('Jugador añadido'); }
   if (form.id === 'type-form') { const description = String(values.get('description') ?? '').trim(); const amountCents = parseAmount(String(values.get('amount') ?? '')); const typeId = String(values.get('typeId') ?? ''); if (!description || !amountCents) return showToast('Introduce una descripción y un importe válido'); const existing = data.fineTypes.find((type) => type.id === typeId); if (existing) { existing.description = description; existing.amountCents = amountCents; } else data.fineTypes.push({ id: uid(), description, amountCents }); closeModal(); activeView = 'settings'; await persist(existing ? 'Regla actualizada' : 'Regla guardada'); }
-  if (form.id === 'fine-form') { const description = String(values.get('description') ?? '').trim(); const amountCents = parseAmount(String(values.get('amount') ?? '')); const playerId = String(values.get('playerId') ?? ''); const date = String(values.get('date') ?? ''); if (!description || !amountCents || !playerId || !date) return showToast('Completa todos los campos'); const fine: Fine = { id: uid(), playerId, description, baseAmountCents: amountCents, date, status: 'pending', surchargeWeeks: 0, surchargeApplications: [] }; const updated = createFineWithBalance(data, fine); const consumed = updated.balanceMovements.length - data.balanceMovements.length; const createdFine = updated.fines.at(-1)!; data = updated; closeModal(); activeView = 'fines'; await persist(consumed ? (createdFine.status === 'paid' ? 'Multa pagada con saldo' : `Saldo aplicado; queda ${euros(currentAmount(createdFine, data.settings))} pendiente`) : 'Multa registrada'); }
+  if (form.id === 'fine-form') { const description = String(values.get('description') ?? '').trim(); const amountCents = parseAmount(String(values.get('amount') ?? '')); const playerId = String(values.get('playerId') ?? ''); const date = String(values.get('date') ?? ''); if (!description || !amountCents || !playerId || !date) return showToast('Completa todos los campos'); const fine: Fine = { id: uid(), playerId, description, baseAmountCents: amountCents, date, status: 'pending', surchargeWeeks: 0, surchargeApplications: [] }; closeModal(); activeView = 'fines'; if (isSupabaseConfigured && activeTeam) { await createFineRemote(activeTeam.id, fine); data = await loadRemoteData(activeTeam.id); render(); showToast('Multa registrada'); } else { const updated = createFineWithBalance(data, fine); const consumed = updated.balanceMovements.length - data.balanceMovements.length; const createdFine = updated.fines.at(-1)!; data = updated; await persist(consumed ? (createdFine.status === 'paid' ? 'Multa pagada con saldo' : `Saldo aplicado; queda ${euros(currentAmount(createdFine, data.settings))} pendiente`) : 'Multa registrada'); } }
   if (form.id === 'transaction-form') { const type = String(values.get('type') ?? ''); const description = String(values.get('description') ?? ''); const amountCents = parseAmount(String(values.get('amount') ?? '')); const date = String(values.get('date') ?? ''); const transaction = createTransaction(type as 'income' | 'expense', amountCents, description, date); if (!transaction) return showToast('Introduce un tipo, importe, descripción y fecha válidos'); data.transactions.push(transaction); closeModal(); activeView = 'fines'; await persist('Movimiento guardado'); }
   if (form.id === 'balance-form') { const playerId = String(values.get('playerId') ?? ''); const description = String(values.get('description') ?? ''); const amountCents = parseAmount(String(values.get('amount') ?? '')); const date = String(values.get('date') ?? ''); const updated = createBalanceDeposit(data, playerId, amountCents, description, date); if (!updated) return showToast('Introduce jugador, importe, descripción y fecha válidos'); data = updated; closeModal(); activeView = 'players'; await persist('Saldo precargado'); }
   if (form.id === 'settings-form') { const teamName = String(values.get('teamName') ?? '').trim(); const weeklySurchargeCents = parseAmount(String(values.get('weeklySurcharge') ?? '')); const surchargePeriodDays = Number(values.get('surchargePeriodDays')); if (!teamName || !weeklySurchargeCents || !Number.isInteger(surchargePeriodDays) || surchargePeriodDays <= 0) return showToast('Revisa el nombre, el recargo y el período en días'); data.settings = { teamName, weeklySurchargeCents, surchargePeriodDays, lateFeesEnabled: values.get('lateFeesEnabled') === 'on' }; await persist('Configuración guardada'); }

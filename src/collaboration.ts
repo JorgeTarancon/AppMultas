@@ -34,6 +34,28 @@ export const listTeamMembers = async (teamId: string) => {
   return data as TeamMember[];
 };
 
+export const inviteTeamMember = async (teamId: string, email: string, role: TeamRole = 'editor') => {
+  const { data, error } = await requireClient().rpc('invite_team_member', { p_team_id: teamId, p_email: email, p_role: role });
+  if (error) throw error;
+  return (data as Array<{ invitation_id: string; email: string; role: TeamRole; token: string; expires_at: string }>)[0];
+};
+
+export const acceptTeamInvitation = async (token: string) => {
+  const { data, error } = await requireClient().rpc('accept_team_invitation', { p_token: token });
+  if (error) throw error;
+  return data as string;
+};
+
+export const changeTeamMemberRole = async (teamId: string, userId: string, role: TeamRole) => {
+  const { error } = await requireClient().rpc('change_team_member_role', { p_team_id: teamId, p_user_id: userId, p_role: role });
+  if (error) throw error;
+};
+
+export const removeTeamMember = async (teamId: string, userId: string) => {
+  const { error } = await requireClient().rpc('remove_team_member', { p_team_id: teamId, p_user_id: userId });
+  if (error) throw error;
+};
+
 export const subscribeToTeamChanges = (teamId: string, onChange: (payload: unknown) => void): (() => void) => {
   const client = requireClient();
   const channel: RealtimeChannel = client

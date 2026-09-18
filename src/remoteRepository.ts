@@ -129,3 +129,27 @@ export const saveRemoteData = async (teamId: string, data: AppData) => {
   const failed = results.find((result) => result.error);
   if (failed?.error) throw failed.error;
 };
+
+const callFinanceRpc = async (name: string, params: Record<string, unknown>) => {
+  const { error } = await requireClient().rpc(name, params);
+  if (error) throw error;
+};
+
+export const createFineRemote = async (teamId: string, fine: Fine) => callFinanceRpc('create_fine_with_balance', {
+  p_team_id: teamId,
+  p_fine_id: fine.id,
+  p_player_id: fine.playerId,
+  p_description: fine.description,
+  p_base_amount_cents: fine.baseAmountCents,
+  p_date: fine.date,
+});
+
+export const markFinePaidRemote = async (teamId: string, fineId: string) => callFinanceRpc('mark_fine_paid', {
+  p_team_id: teamId,
+  p_fine_id: fineId,
+});
+
+export const applySurchargeRemote = async (teamId: string, fineId: string) => callFinanceRpc('apply_fine_surcharge', {
+  p_team_id: teamId,
+  p_fine_id: fineId,
+});

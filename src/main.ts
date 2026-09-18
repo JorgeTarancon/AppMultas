@@ -9,7 +9,7 @@ import './styles.css';
 import { AppData, applySurcharge, balanceForPlayer, createBalanceDeposit, createFineWithBalance, createTransaction, currentAmount, euros, Fine, formatDate, isSurchargeDue, parseAmount, surchargeCount, summary, today, Transaction, uid, whatsappMessage } from './domain';
 import { load, loadTeamSnapshot, save, saveTeamSnapshot } from './storage';
 import { AuthState, getAuthState, isSupabaseConfigured, requestMagicLink, signOut, subscribeToAuth } from './supabase';
-import { acceptTeamInvitation, changeTeamMemberRole, createTeam, inviteTeamMember, listTeamMembers, listTeams, removeTeamMember, subscribeToTeamChanges, Team, TeamMember, TeamRole } from './collaboration';
+import { acceptTeamInvitation, AuditEvent, changeTeamMemberRole, createTeam, inviteTeamMember, listAuditEvents, listTeamMembers, listTeams, removeTeamMember, subscribeToTeamChanges, Team, TeamMember, TeamRole } from './collaboration';
 import { applySurchargeRemote, createBalanceDepositRemote, createFineRemote, createFineTypeRemote, createPlayerRemote, createTransactionRemote, deleteFineRemote, deleteFineTypeRemote, deletePlayerRemote, deleteTransactionRemote, loadRemoteData, markFinePaidRemote, saveRemoteData, setPlayerActiveRemote, updateFineTypeRemote, updateTeamSettingsRemote } from './remoteRepository';
 
 let data: AppData;
@@ -24,6 +24,13 @@ let teams: Team[] = [];
 let activeTeam: Team | null = null;
 let activeRole: TeamRole = 'viewer';
 let teamMembers: TeamMember[] = [];
+let auditEvents: AuditEvent[] = [];
+
+const auditPanel = () => {
+  if (!isSupabaseConfigured || !activeTeam) return '';
+  const rows = auditEvents.length ? auditEvents.map((event) => `<div class="catalog-row"><div><strong>${escapeHtml(`${event.action} · ${event.entity_type}`)}</strong><span>${new Date(event.created_at).toLocaleString('es-ES')} · ${escapeHtml(event.user_id.slice(0, 8))}</span></div><span>${event.entity_id ? escapeHtml(event.entity_id.slice(0, 8)) : ''}</span></div>`).join('') : '<p class="field-hint">Todavía no hay actividad registrada.</p>';
+  return `<section class="panel catalog-panel audit-panel"><div class="panel-heading"><div><span class="eyebrow">ACTIVIDAD</span><h2>Auditoría reciente</h2></div></div>${rows}</section>`;
+};
 let syncStatus: 'syncing' | 'synced' | 'offline' | 'error' = isSupabaseConfigured ? 'syncing' : 'offline';
 let teamLoading = false;
 let teamError = '';
@@ -142,7 +149,7 @@ const settingsView = () => `${header('CONFIGURACIÓN', 'Equipo y recargos', 'Def
 
 const overviewModal = (content: string) => `<div class="modal-backdrop"><div class="modal">${content}</div></div>`;
 const render = () => {
-    if (activeView === 'settings' && isSupabaseConfigured && activeTeam) queueMicrotask(() => document.querySelector('.settings-layout > div')?.insertAdjacentHTML('afterbegin', membersPanel()));
+    if (activeView === 'settings' && isSupabaseConfigured && activeTeam) queueMicrotask(() => { const container = document.querySelector('.settings-layout > div'); container?.insertAdjacentHTML('afterbegin', `${auditPanel()}${membersPanel()}`); });
   if (isSupabaseConfigured && authLoading) { app.innerHTML = '<main class="login-screen"><div class="login-loading">Comprobando sesión...</div></main>'; return; }
   if (isSupabaseConfigured && !authState.user) { app.innerHTML = loginView(); return; }
   if (isSupabaseConfigured && !activeTeam) { app.innerHTML = teamView(); return; }
@@ -173,12 +180,13 @@ const selectTeam = async (team: Team) => {
     await saveTeamSnapshot(team.id, remoteData);
     syncStatus = 'synced';
     teamMembers = await listTeamMembers(team.id);
+    auditEvents = await listAuditEvents(team.id);
     activeRole = teamMembers.find((member) => member.user_id === authState.user?.id)?.role ?? 'viewer';
     unsubscribeTeam();
     activeTeam = team;
     data = remoteData;
     unsubscribeTeam = subscribeToTeamChanges(team.id, async () => {
-      try { data = await loadRemoteData(team.id); teamMembers = await listTeamMembers(team.id); await saveTeamSnapshot(team.id, data); syncStatus = 'synced'; render(); } catch (error) { syncStatus = 'error'; teamError = error instanceof Error ? error.message : 'No se pudieron actualizar los datos'; render(); }
+      try { data = await loadRemoteData(team.id); teamMembers = await listTeamMembers(team.id); auditEvents = await listAuditEvents(team.id); await saveTeamSnapshot(team.id, data); syncStatus = 'synced'; render(); } catch (error) { syncStatus = 'error'; teamError = error instanceof Error ? error.message : 'No se pudieron actualizar los datos'; render(); }
     });
   } catch (error) {
     const cached = await loadTeamSnapshot(team.id).catch(() => null);

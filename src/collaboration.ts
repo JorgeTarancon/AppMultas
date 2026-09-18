@@ -4,6 +4,7 @@ import { supabase } from './supabase';
 export type TeamRole = 'owner' | 'editor' | 'viewer';
 export type Team = { id: string; name: string; settings: Record<string, unknown>; created_by: string; created_at: string; updated_at: string };
 export type TeamMember = { team_id: string; user_id: string; role: TeamRole; created_at: string };
+export type AuditEvent = { id: number; team_id: string; user_id: string; action: string; entity_type: string; entity_id: string | null; metadata: Record<string, unknown>; created_at: string };
 
 const requireClient = () => {
   if (!supabase) throw new Error('Supabase no está configurado');
@@ -32,6 +33,12 @@ export const listTeamMembers = async (teamId: string) => {
   const { data, error } = await client.from('team_members').select('*').eq('team_id', teamId);
   if (error) throw error;
   return data as TeamMember[];
+};
+
+export const listAuditEvents = async (teamId: string, limit = 40) => {
+  const { data, error } = await requireClient().from('audit_log').select('*').eq('team_id', teamId).order('created_at', { ascending: false }).limit(limit);
+  if (error) throw error;
+  return data as AuditEvent[];
 };
 
 export const inviteTeamMember = async (teamId: string, email: string, role: TeamRole = 'editor') => {
@@ -63,6 +70,7 @@ export const subscribeToTeamChanges = (teamId: string, onChange: (payload: unkno
   const channel: RealtimeChannel = client
     .channel(`team:${teamId}`)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'team_members', filter: `team_id=eq.${teamId}` }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_log', filter: `team_id=eq.${teamId}` }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'players', filter: `team_id=eq.${teamId}` }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'fine_types', filter: `team_id=eq.${teamId}` }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'fines', filter: `team_id=eq.${teamId}` }, onChange)

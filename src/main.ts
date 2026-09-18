@@ -1,9 +1,16 @@
+const membersPanel = () => {
+  if (!isSupabaseConfigured || !activeTeam) return '';
+  const rows = teamMembers.map((member) => `<div class="catalog-row"><div><strong>${member.user_id === authState.user?.id ? 'Tú' : escapeHtml(member.user_id.slice(0, 8))}</strong><span>${member.role}</span></div>${activeRole === 'owner' && member.user_id !== authState.user?.id ? `<div><button class="text-button" data-action="change-role:${member.user_id}:editor">Editor</button><button class="text-button" data-action="change-role:${member.user_id}:viewer">Lector</button><button class="icon-button danger" data-action="remove-member:${member.user_id}" aria-label="Retirar miembro">${icon('trash')}</button></div>` : ''}</div>`).join('');
+  const invite = activeRole === 'owner' ? `<form class="member-invite-form" id="member-invite-form"><label>Email<input name="email" type="email" required placeholder="persona@ejemplo.com" /></label><label>Rol<select name="role"><option value="editor">Editor</option><option value="viewer">Lector</option></select></label><button class="button primary" type="submit">Invitar miembro</button></form>` : '<p class="field-hint">Solo el propietario puede gestionar miembros.</p>';
+  return `<section class="panel catalog-panel members-panel"><div class="panel-heading"><div><span class="eyebrow">${teamMembers.length} MIEMBROS</span><h2>Personas del equipo</h2></div></div>${rows}${invite}</section>`;
+};
+
 import './styles.css';
 import { AppData, applySurcharge, balanceForPlayer, createBalanceDeposit, createFineWithBalance, createTransaction, currentAmount, euros, Fine, formatDate, isSurchargeDue, parseAmount, surchargeCount, summary, today, Transaction, uid, whatsappMessage } from './domain';
 import { load, save } from './storage';
 import { AuthState, getAuthState, isSupabaseConfigured, requestMagicLink, signOut, subscribeToAuth } from './supabase';
-import { createTeam, listTeamMembers, listTeams, subscribeToTeamChanges, Team, TeamRole } from './collaboration';
-import { applySurchargeRemote, createFineRemote, loadRemoteData, markFinePaidRemote, saveRemoteData } from './remoteRepository';
+import { acceptTeamInvitation, changeTeamMemberRole, createTeam, inviteTeamMember, listTeamMembers, listTeams, removeTeamMember, subscribeToTeamChanges, Team, TeamMember, TeamRole } from './collaboration';
+import { applySurchargeRemote, createBalanceDepositRemote, createFineRemote, createTransactionRemote, loadRemoteData, markFinePaidRemote, saveRemoteData } from './remoteRepository';
 
 let data: AppData;
 let activeView = 'overview';
@@ -16,6 +23,7 @@ let loginBusy = false;
 let teams: Team[] = [];
 let activeTeam: Team | null = null;
 let activeRole: TeamRole = 'viewer';
+let teamMembers: TeamMember[] = [];
 let teamLoading = false;
 let teamError = '';
 let unsubscribeTeam: () => void = () => undefined;
@@ -23,9 +31,21 @@ let unsubscribeTeam: () => void = () => undefined;
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]!));
 const errorMessage = (error: unknown, fallback: string) => {
-  if (!(error instanceof Error)) return fallback;
-  const code = (error as Error & { code?: string }).code;
-  return `${error.message}${code ? ` (${code})` : ''}`;
+  const value = error as { message?: string; details?: string; hint?: string; code?: string } | null;
+  if (!value || typeof value !== 'object') return fallback;
+  const message = value.message || fallback;
+  return `${message}${value.code ? ` (${value.code})` : ''}${value.details ? ` · ${value.details}` : ''}${value.hint ? ` · ${value.hint}` : ''}`;
+};
+const acceptPendingInvitation = async () => {
+  const token = new URLSearchParams(window.location.search).get('invite');
+  if (!token || !authState.user) return;
+  try {
+    await acceptTeamInvitation(token);
+    window.history.replaceState({}, document.title, `${window.location.pathname}${window.location.hash}`);
+    authMessage = 'Invitación aceptada. Ya tienes acceso al equipo.';
+  } catch (error) {
+    authError = errorMessage(error, 'No se pudo aceptar la invitación');
+  }
 };
 const moneyInput = (cents: number) => (cents / 100).toFixed(2);
 const playerName = (id: string) => data.players.find((player) => player.id === id)?.name ?? 'Jugador eliminado';
@@ -102,6 +122,7 @@ const settingsView = () => `${header('CONFIGURACIÓN', 'Equipo y recargos', 'Def
 
 const overviewModal = (content: string) => `<div class="modal-backdrop"><div class="modal">${content}</div></div>`;
 const render = () => {
+    if (activeView === 'settings' && isSupabaseConfigured && activeTeam) queueMicrotask(() => document.querySelector('.settings-layout > div')?.insertAdjacentHTML('afterbegin', membersPanel()));
   if (isSupabaseConfigured && authLoading) { app.innerHTML = '<main class="login-screen"><div class="login-loading">Comprobando sesión...</div></main>'; return; }
   if (isSupabaseConfigured && !authState.user) { app.innerHTML = loginView(); return; }
   if (isSupabaseConfigured && !activeTeam) { app.innerHTML = teamView(); return; }
@@ -129,13 +150,13 @@ const selectTeam = async (team: Team) => {
   render();
   try {
     const remoteData = await loadRemoteData(team.id);
-    const members = await listTeamMembers(team.id);
-    activeRole = members.find((member) => member.user_id === authState.user?.id)?.role ?? 'viewer';
+    teamMembers = await listTeamMembers(team.id);
+    activeRole = teamMembers.find((member) => member.user_id === authState.user?.id)?.role ?? 'viewer';
     unsubscribeTeam();
     activeTeam = team;
     data = remoteData;
     unsubscribeTeam = subscribeToTeamChanges(team.id, async () => {
-      try { data = await loadRemoteData(team.id); render(); } catch (error) { teamError = error instanceof Error ? error.message : 'No se pudieron actualizar los datos'; render(); }
+      try { data = await loadRemoteData(team.id); teamMembers = await listTeamMembers(team.id); render(); } catch (error) { teamError = error instanceof Error ? error.message : 'No se pudieron actualizar los datos'; render(); }
     });
   } catch (error) {
     teamError = error instanceof Error ? error.message : 'No se pudo cargar el equipo';
@@ -175,6 +196,8 @@ document.addEventListener('click', async (event) => {
   else if (action.startsWith('add-balance:')) balanceForm(action.split(':')[1]);
   else if (action === 'add-type') typeForm();
   else if (action === 'share') await share();
+  else if (action.startsWith('change-role:') && activeTeam && activeRole === 'owner') { const [, userId, role] = action.split(':'); try { await changeTeamMemberRole(activeTeam.id, userId, role as TeamRole); teamMembers = await listTeamMembers(activeTeam.id); render(); showToast('Rol actualizado'); } catch (error) { showToast(errorMessage(error, 'No se pudo cambiar el rol')); } }
+  else if (action.startsWith('remove-member:') && activeTeam && activeRole === 'owner') { const userId = action.split(':')[1]; try { await removeTeamMember(activeTeam.id, userId); teamMembers = await listTeamMembers(activeTeam.id); render(); showToast('Miembro retirado'); } catch (error) { showToast(errorMessage(error, 'No se pudo retirar al miembro')); } }
   else if (action.startsWith('toggle-player:')) { const player = data.players.find((entry) => entry.id === action.split(':')[1]); if (player) { player.active = !player.active; await persist(player.active ? 'Jugador activado' : 'Jugador desactivado'); } }
   else if (action.startsWith('pay-fine:')) { const fine = data.fines.find((entry) => entry.id === action.split(':')[1]); if (fine) confirmAction('¿Registrar este pago?', `Se marcará como pagada por ${euros(currentAmount(fine, data.settings))}.`, `confirm-pay:${fine.id}`, 'Marcar multa como pagada'); }
   else if (action.startsWith('apply-surcharge:')) { const fine = data.fines.find((entry) => entry.id === action.split(':')[1]); if (fine && isSurchargeDue(fine, data.settings)) confirmAction('¿Aplicar este recargo?', `Se añadirán ${euros(data.settings.weeklySurchargeCents)} y se registrará la fecha de aplicación.`, `confirm-apply-surcharge:${fine.id}`, 'Aplicar recargo'); }
@@ -196,11 +219,12 @@ document.addEventListener('change', (event) => { const target = event.target as 
 document.addEventListener('submit', async (event) => { event.preventDefault(); const form = event.target as HTMLFormElement; const values = new FormData(form);
   if (form.id === 'login-form') { const email = String(values.get('email') ?? '').trim(); if (!email) return; loginBusy = true; authError = ''; authMessage = ''; render(); try { await requestMagicLink(email, window.location.href); authMessage = 'Revisa tu correo para continuar.'; } catch (error) { authError = error instanceof Error ? error.message : 'No se pudo enviar el enlace de acceso'; } finally { loginBusy = false; render(); } return; }
   if (form.id === 'team-form') { const name = String(values.get('teamName') ?? '').trim(); if (!name) return; teamLoading = true; teamError = ''; render(); try { const team = await createTeam(name); teams = [...teams, team]; await selectTeam(team); } catch (error) { teamError = errorMessage(error, 'No se pudo crear el equipo'); } finally { teamLoading = false; render(); } return; }
+  if (form.id === 'member-invite-form' && activeTeam && activeRole === 'owner') { const email = String(values.get('email') ?? '').trim(); const role = String(values.get('role') ?? 'editor') as TeamRole; try { const invitation = await inviteTeamMember(activeTeam.id, email, role); const inviteUrl = `${window.location.origin}${window.location.pathname}?invite=${encodeURIComponent(invitation.token)}`; await navigator.clipboard?.writeText(inviteUrl); showToast('Invitación creada y enlace copiado'); } catch (error) { showToast(errorMessage(error, 'No se pudo crear la invitación')); } return; }
   if (form.id === 'player-form') { const name = String(values.get('name') ?? '').trim(); if (!name) return; data.players.push({ id: uid(), name, active: true }); closeModal(); activeView = 'players'; await persist('Jugador añadido'); }
   if (form.id === 'type-form') { const description = String(values.get('description') ?? '').trim(); const amountCents = parseAmount(String(values.get('amount') ?? '')); const typeId = String(values.get('typeId') ?? ''); if (!description || !amountCents) return showToast('Introduce una descripción y un importe válido'); const existing = data.fineTypes.find((type) => type.id === typeId); if (existing) { existing.description = description; existing.amountCents = amountCents; } else data.fineTypes.push({ id: uid(), description, amountCents }); closeModal(); activeView = 'settings'; await persist(existing ? 'Regla actualizada' : 'Regla guardada'); }
   if (form.id === 'fine-form') { const description = String(values.get('description') ?? '').trim(); const amountCents = parseAmount(String(values.get('amount') ?? '')); const playerId = String(values.get('playerId') ?? ''); const date = String(values.get('date') ?? ''); if (!description || !amountCents || !playerId || !date) return showToast('Completa todos los campos'); const fine: Fine = { id: uid(), playerId, description, baseAmountCents: amountCents, date, status: 'pending', surchargeWeeks: 0, surchargeApplications: [] }; activeView = 'fines'; if (isSupabaseConfigured && activeTeam) { try { await createFineRemote(activeTeam.id, fine); data = await loadRemoteData(activeTeam.id); closeModal(); render(); showToast('Multa registrada'); } catch (error) { showToast(errorMessage(error, 'No se pudo registrar la multa')); } } else { closeModal(); const updated = createFineWithBalance(data, fine); const consumed = updated.balanceMovements.length - data.balanceMovements.length; const createdFine = updated.fines.at(-1)!; data = updated; await persist(consumed ? (createdFine.status === 'paid' ? 'Multa pagada con saldo' : `Saldo aplicado; queda ${euros(currentAmount(createdFine, data.settings))} pendiente`) : 'Multa registrada'); } }
-  if (form.id === 'transaction-form') { const type = String(values.get('type') ?? ''); const description = String(values.get('description') ?? ''); const amountCents = parseAmount(String(values.get('amount') ?? '')); const date = String(values.get('date') ?? ''); const transaction = createTransaction(type as 'income' | 'expense', amountCents, description, date); if (!transaction) return showToast('Introduce un tipo, importe, descripción y fecha válidos'); data.transactions.push(transaction); closeModal(); activeView = 'fines'; await persist('Movimiento guardado'); }
-  if (form.id === 'balance-form') { const playerId = String(values.get('playerId') ?? ''); const description = String(values.get('description') ?? ''); const amountCents = parseAmount(String(values.get('amount') ?? '')); const date = String(values.get('date') ?? ''); const updated = createBalanceDeposit(data, playerId, amountCents, description, date); if (!updated) return showToast('Introduce jugador, importe, descripción y fecha válidos'); data = updated; closeModal(); activeView = 'players'; await persist('Saldo precargado'); }
+  if (form.id === 'transaction-form') { const type = String(values.get('type') ?? ''); const description = String(values.get('description') ?? ''); const amountCents = parseAmount(String(values.get('amount') ?? '')); const date = String(values.get('date') ?? ''); const transaction = createTransaction(type as 'income' | 'expense', amountCents, description, date); if (!transaction) return showToast('Introduce un tipo, importe, descripción y fecha válidos'); activeView = 'fines'; if (isSupabaseConfigured && activeTeam) { try { await createTransactionRemote(activeTeam.id, transaction); data = await loadRemoteData(activeTeam.id); closeModal(); render(); showToast('Movimiento guardado'); } catch (error) { showToast(errorMessage(error, 'No se pudo guardar el movimiento')); } } else { data.transactions.push(transaction); closeModal(); await persist('Movimiento guardado'); } }
+  if (form.id === 'balance-form') { const playerId = String(values.get('playerId') ?? ''); const description = String(values.get('description') ?? ''); const amountCents = parseAmount(String(values.get('amount') ?? '')); const date = String(values.get('date') ?? ''); const updated = createBalanceDeposit(data, playerId, amountCents, description, date); if (!updated) return showToast('Introduce jugador, importe, descripción y fecha válidos'); const movement = updated.balanceMovements.at(-1)!; activeView = 'players'; if (isSupabaseConfigured && activeTeam) { try { await createBalanceDepositRemote(activeTeam.id, movement); data = await loadRemoteData(activeTeam.id); closeModal(); render(); showToast('Saldo precargado'); } catch (error) { showToast(errorMessage(error, 'No se pudo guardar el saldo')); } } else { data = updated; closeModal(); await persist('Saldo precargado'); } }
   if (form.id === 'settings-form') { const teamName = String(values.get('teamName') ?? '').trim(); const weeklySurchargeCents = parseAmount(String(values.get('weeklySurcharge') ?? '')); const surchargePeriodDays = Number(values.get('surchargePeriodDays')); if (!teamName || !weeklySurchargeCents || !Number.isInteger(surchargePeriodDays) || surchargePeriodDays <= 0) return showToast('Revisa el nombre, el recargo y el período en días'); data.settings = { teamName, weeklySurchargeCents, surchargePeriodDays, lateFeesEnabled: values.get('lateFeesEnabled') === 'on' }; await persist('Configuración guardada'); }
 });
 
@@ -213,12 +237,12 @@ const init = async () => {
       activeTeam = null;
       teams = [];
       unsubscribeTeam();
-      if (state.user) await loadTeams();
+      if (state.user) { await acceptPendingInvitation(); await loadTeams(); }
       render();
     });
     authState = await getAuthState();
     authLoading = false;
-    if (authState.user) await loadTeams();
+    if (authState.user) { await acceptPendingInvitation(); await loadTeams(); }
   }
   if (!isSupabaseConfigured) { data = await load(); await save(data); }
   render();

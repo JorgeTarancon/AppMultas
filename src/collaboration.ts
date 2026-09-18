@@ -37,7 +37,9 @@ export const listTeamMembers = async (teamId: string) => {
 export const inviteTeamMember = async (teamId: string, email: string, role: TeamRole = 'editor') => {
   const { data, error } = await requireClient().rpc('invite_team_member', { p_team_id: teamId, p_email: email, p_role: role });
   if (error) throw error;
-  return (data as Array<{ invitation_id: string; email: string; role: TeamRole; token: string; expires_at: string }>)[0];
+  const invitation = (data as Array<{ invitation_id: string; invited_email: string; member_role: TeamRole; token: string; expires_at: string }>)[0];
+  if (!invitation?.token) throw new Error('Supabase no devolvió el token de invitación');
+  return invitation;
 };
 
 export const acceptTeamInvitation = async (token: string) => {

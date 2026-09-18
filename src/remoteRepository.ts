@@ -153,3 +153,21 @@ export const applySurchargeRemote = async (teamId: string, fineId: string) => ca
   p_team_id: teamId,
   p_fine_id: fineId,
 });
+
+export const createBalanceDepositRemote = async (teamId: string, movement: { id: string; playerId: string; amountCents: number; description: string; date: string }) => callFinanceRpc('create_balance_deposit', {
+  p_team_id: teamId,
+  p_id: movement.id,
+  p_player_id: movement.playerId,
+  p_amount_cents: movement.amountCents,
+  p_description: movement.description,
+  p_date: movement.date,
+});
+
+export const createTransactionRemote = async (teamId: string, transaction: { id: string; type: 'income' | 'expense'; amountCents: number; description: string; date: string }) => callFinanceRpc('create_team_transaction', {
+  p_team_id: teamId,
+  p_id: transaction.id,
+  p_type: transaction.type,
+  p_amount_cents: transaction.amountCents,
+  p_description: transaction.description,
+  p_date: transaction.date,
+});

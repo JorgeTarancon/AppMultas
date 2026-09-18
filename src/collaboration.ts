@@ -19,8 +19,11 @@ export const listTeams = async () => {
 
 export const createTeam = async (name: string) => {
   const client = requireClient();
-  const { data, error } = await client.rpc('create_team', { team_name: name.trim() }).single();
+  const normalizedName = name.trim();
+  if (!normalizedName) throw new Error('Introduce un nombre de equipo');
+  const { data, error } = await client.rpc('create_team', { team_name: normalizedName });
   if (error) throw error;
+  if (!data) throw new Error('Supabase no devolvió el equipo creado');
   return data as Team;
 };
 

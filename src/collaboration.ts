@@ -28,6 +28,11 @@ export const createTeam = async (name: string) => {
   return data as Team;
 };
 
+export const deleteTeam = async (teamId: string) => {
+  const { error } = await requireClient().rpc('delete_team', { p_team_id: teamId });
+  if (error) throw error;
+};
+
 export const listTeamMembers = async (teamId: string) => {
   const client = requireClient();
   const { data, error } = await client.from('team_members').select('*').eq('team_id', teamId);

@@ -36,7 +36,7 @@ const normalizeApplication = (value: unknown): SurchargeApplication | null => {
   if (!isRecord(value) || typeof value.appliedAt !== 'string') return null;
   const amountCents = nonNegativeInteger(value.amountCents, -1);
   const totalAmountCents = nonNegativeInteger(value.totalAmountCents, -1);
-  return amountCents >= 0 && totalAmountCents >= 0 ? { appliedAt: value.appliedAt, amountCents, totalAmountCents } : null;
+  return amountCents >= 0 && totalAmountCents >= 0 ? { id: typeof value.id === 'string' ? value.id : crypto.randomUUID(), appliedAt: value.appliedAt, amountCents, totalAmountCents } : null;
 };
 
 const normalizeFine = (value: unknown): Fine | null => {
@@ -92,4 +92,22 @@ const normalizeBalanceMovement = (value: unknown): BalanceMovement | null => {
   const amountCents = nonNegativeInteger(value.amountCents, -1);
   if (amountCents <= 0 || !value.description.trim()) return null;
   return { id: value.id, playerId: value.playerId, type: value.type, amountCents, description: value.description.trim(), date: value.date, createdAt: value.createdAt, ...(typeof value.fineId === 'string' ? { fineId: value.fineId } : {}) };
+};
+
+export const loadTeamSnapshot = async (teamId: string): Promise<AppData | null> => {
+  const db = await open();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(STORE).objectStore(STORE).get(`team:${teamId}`);
+    request.onsuccess = () => resolve(request.result ? normalizeData(request.result) : null);
+    request.onerror = () => reject(request.error);
+  });
+};
+
+export const saveTeamSnapshot = async (teamId: string, data: AppData) => {
+  const db = await open();
+  return new Promise<void>((resolve, reject) => {
+    const request = db.transaction(STORE, 'readwrite').objectStore(STORE).put(data, `team:${teamId}`);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
 };

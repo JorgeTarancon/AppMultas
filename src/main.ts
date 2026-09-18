@@ -1,13 +1,65 @@
+const membersPanel = () => {
+  if (!isSupabaseConfigured || !activeTeam) return '';
+  const rows = teamMembers.map((member) => `<div class="catalog-row"><div><strong>${member.user_id === authState.user?.id ? 'Tú' : escapeHtml(member.user_id.slice(0, 8))}</strong><span>${member.role}</span></div>${activeRole === 'owner' && member.user_id !== authState.user?.id ? `<div><button class="text-button" data-action="change-role:${member.user_id}:editor">Editor</button><button class="text-button" data-action="change-role:${member.user_id}:viewer">Lector</button><button class="icon-button danger" data-action="remove-member:${member.user_id}" aria-label="Retirar miembro">${icon('trash')}</button></div>` : ''}</div>`).join('');
+  const invite = activeRole === 'owner' ? `<form class="member-invite-form" id="member-invite-form"><label>Email<input name="email" type="email" required placeholder="persona@ejemplo.com" /></label><label>Rol<select name="role"><option value="editor">Editor</option><option value="viewer">Lector</option></select></label><button class="button primary" type="submit">Invitar miembro</button></form>` : '<p class="field-hint">Solo el propietario puede gestionar miembros.</p>';
+  return `<section class="panel catalog-panel members-panel"><div class="panel-heading"><div><span class="eyebrow">${teamMembers.length} MIEMBROS</span><h2>Personas del equipo</h2></div></div>${rows}${invite}</section>`;
+};
+
 import './styles.css';
 import { AppData, applySurcharge, balanceForPlayer, createBalanceDeposit, createFineWithBalance, createTransaction, currentAmount, euros, Fine, formatDate, isSurchargeDue, parseAmount, surchargeCount, summary, today, Transaction, uid, whatsappMessage } from './domain';
-import { load, save } from './storage';
+import { load, loadTeamSnapshot, save, saveTeamSnapshot } from './storage';
+import { AuthState, getAuthState, isSupabaseConfigured, requestMagicLink, signOut, subscribeToAuth } from './supabase';
+import { acceptTeamInvitation, AuditEvent, changeTeamMemberRole, createTeam, deleteTeam, inviteTeamMember, listAuditEvents, listTeamMembers, listTeams, removeTeamMember, subscribeToTeamChanges, Team, TeamMember, TeamRole } from './collaboration';
+import { applySurchargeRemote, createBalanceDepositRemote, createFineRemote, createFineTypeRemote, createPlayerRemote, createTransactionRemote, deleteFineRemote, deleteFineTypeRemote, deletePlayerRemote, deleteTransactionRemote, loadRemoteData, markFinePaidRemote, saveRemoteData, setPlayerActiveRemote, updateFineTypeRemote, updateTeamSettingsRemote } from './remoteRepository';
 
 let data: AppData;
 let activeView = 'overview';
 let toastTimer: number | undefined;
+let authState: AuthState = { session: null, user: null };
+let authLoading = isSupabaseConfigured;
+let authError = '';
+let authMessage = '';
+let loginBusy = false;
+let teams: Team[] = [];
+let activeTeam: Team | null = null;
+let activeRole: TeamRole = 'viewer';
+let teamMembers: TeamMember[] = [];
+let auditEvents: AuditEvent[] = [];
+
+const auditPanel = () => {
+  if (!isSupabaseConfigured || !activeTeam) return '';
+  const rows = auditEvents.length ? auditEvents.map((event) => `<div class="catalog-row"><div><strong>${escapeHtml(`${event.action} · ${event.entity_type}`)}</strong><span>${new Date(event.created_at).toLocaleString('es-ES')} · ${escapeHtml(event.user_id.slice(0, 8))}</span></div><span>${event.entity_id ? escapeHtml(event.entity_id.slice(0, 8)) : ''}</span></div>`).join('') : '<p class="field-hint">Todavía no hay actividad registrada.</p>';
+  return `<section class="panel catalog-panel audit-panel"><div class="panel-heading"><div><span class="eyebrow">ACTIVIDAD</span><h2>Auditoría reciente</h2></div></div>${rows}</section>`;
+};
+let syncStatus: 'syncing' | 'synced' | 'offline' | 'error' = isSupabaseConfigured ? 'syncing' : 'offline';
+let teamLoading = false;
+let teamError = '';
+let unsubscribeTeam: () => void = () => undefined;
+
+const activeTeamStorageKey = () => authState.user ? `cuenta-clara:active-team:${authState.user.id}` : 'cuenta-clara:active-team';
+const getStoredTeamId = () => localStorage.getItem(activeTeamStorageKey());
+const storeActiveTeam = (teamId: string) => localStorage.setItem(activeTeamStorageKey(), teamId);
+const forgetStoredTeam = (teamId: string) => { if (getStoredTeamId() === teamId) localStorage.removeItem(activeTeamStorageKey()); };
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]!));
+const errorMessage = (error: unknown, fallback: string) => {
+  const value = error as { message?: string; details?: string; hint?: string; code?: string } | null;
+  if (!value || typeof value !== 'object') return fallback;
+  const message = value.message || fallback;
+  return `${message}${value.code ? ` (${value.code})` : ''}${value.details ? ` · ${value.details}` : ''}${value.hint ? ` · ${value.hint}` : ''}`;
+};
+const acceptPendingInvitation = async () => {
+  const token = new URLSearchParams(window.location.search).get('invite');
+  if (!token || !authState.user) return;
+  try {
+    await acceptTeamInvitation(token);
+    window.history.replaceState({}, document.title, `${window.location.pathname}${window.location.hash}`);
+    authMessage = 'Invitación aceptada. Ya tienes acceso al equipo.';
+  } catch (error) {
+    authError = errorMessage(error, 'No se pudo aceptar la invitación');
+  }
+};
 const moneyInput = (cents: number) => (cents / 100).toFixed(2);
 const playerName = (id: string) => data.players.find((player) => player.id === id)?.name ?? 'Jugador eliminado';
 const showToast = (message: string) => {
@@ -18,9 +70,32 @@ const showToast = (message: string) => {
   window.clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => toast.classList.remove('visible'), 2600);
 };
+const copyToClipboard = async (value: string) => {
+  if (navigator.clipboard) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const input = document.createElement('textarea');
+  input.value = value;
+  input.style.position = 'fixed';
+  input.style.opacity = '0';
+  document.body.appendChild(input);
+  input.focus();
+  input.select();
+  const copied = document.execCommand('copy');
+  input.remove();
+  if (!copied) throw new Error('El navegador no permite copiar al portapapeles');
+};
+
+const loginView = () => `<main class="login-screen"><section class="login-panel"><div class="brand login-brand"><div class="brand-mark">CC</div><div><strong>Cuenta Clara</strong><span>Control de equipo</span></div></div><span class="eyebrow">ACCESO DEL EQUIPO</span><h1>Entra a tu cuenta</h1><p>Usa tu email para recibir un enlace de acceso seguro. No necesitas contraseña.</p><form id="login-form" class="login-form"><label>Email<input name="email" type="email" autocomplete="email" required placeholder="tu@email.com" /></label><button class="button primary" type="submit" ${loginBusy ? 'disabled' : ''}>${loginBusy ? 'Enviando...' : 'Enviar enlace de acceso'}</button>${authMessage ? `<div class="login-message success">${escapeHtml(authMessage)}</div>` : ''}${authError ? `<div class="login-message error">${escapeHtml(authError)}</div>` : ''}</form></section></main>`;
+const teamView = () => `<main class="login-screen"><section class="login-panel team-panel"><div class="brand login-brand"><div class="brand-mark">CC</div><div><strong>Cuenta Clara</strong><span>Control de equipo</span></div></div><span class="eyebrow">EQUIPOS DISPONIBLES</span><h1>Elige tu equipo</h1><p>Selecciona un equipo existente o crea uno nuevo para empezar a colaborar.</p>${teams.length ? `<div class="team-list">${teams.map((team) => `<div class="team-option-row"><button class="team-option" data-team-id="${team.id}"><strong>${escapeHtml(team.name)}</strong><span>Equipo compartido</span></button>${team.created_by === authState.user?.id ? `<button class="icon-button danger team-delete-button" data-action="delete-team:${team.id}" aria-label="Eliminar ${escapeHtml(team.name)}">${icon('trash')}</button>` : ''}</div>`).join('')}</div>` : ''}<form id="team-form" class="login-form"><label>${teams.length ? 'Crear otro equipo' : 'Nombre del equipo'}<input name="teamName" required maxlength="120" placeholder="Ej. Los del martes" /></label><button class="button primary" type="submit" ${teamLoading ? 'disabled' : ''}>${teamLoading ? 'Creando...' : 'Crear equipo'}</button>${teamError ? `<div class="login-message error">${escapeHtml(teamError)}</div>` : ''}</form><button class="text-button team-signout" data-action="sign-out">Cerrar sesión</button></section></main>`;
 
 const persist = async (message?: string) => {
-  await save(data);
+  if (isSupabaseConfigured && activeTeam) {
+    syncStatus = 'syncing';
+    render();
+    try { await saveRemoteData(activeTeam.id, data); await saveTeamSnapshot(activeTeam.id, data); syncStatus = 'synced'; } catch (error) { syncStatus = 'error'; throw error; }
+  } else await save(data);
   render();
   if (message) showToast(message);
 };
@@ -33,13 +108,16 @@ const navItem = (id: string, label: string, iconName: string) => `<button class=
 
 const renderSidebar = () => `<aside class="sidebar">
   <div class="brand"><div class="brand-mark">CC</div><div><strong>Cuenta Clara</strong><span>Control de equipo</span></div></div>
-  <div class="team-switcher"><span class="eyebrow">EQUIPO ACTIVO</span><strong>${escapeHtml(data.settings.teamName)}</strong><span class="status-dot">● Guardado en este dispositivo</span></div>
+  <div class="team-switcher"><span class="eyebrow">EQUIPO ACTIVO</span><strong>${escapeHtml(data.settings.teamName)}</strong><span class="status-dot">● ${syncStatus === 'synced' ? 'Sincronizado' : syncStatus === 'syncing' ? 'Sincronizando...' : syncStatus === 'offline' ? 'Sin conexión' : 'Error de sincronización'} · ${activeRole}</span><button class="team-change-button" data-action="manage-teams">Cambiar equipo</button></div>
   <nav><span class="nav-heading">MENÚ PRINCIPAL</span>${navItem('overview', 'Resumen', 'dashboard')}${navItem('players', 'Jugadores', 'users')}${navItem('fines', 'Multas', 'book')}<span class="nav-heading spaced">CONFIGURACIÓN</span>${navItem('settings', 'Equipo y recargos', 'settings')}</nav>
-  <div class="sidebar-foot"><span class="local-badge">⌁</span><div><strong>Modo local</strong><small>Tus datos no salen del dispositivo</small></div></div>
+  <div class="sidebar-foot"><span class="local-badge">⌁</span><div><strong>${isSupabaseConfigured ? 'Sesión activa' : 'Modo local'}</strong><small>${isSupabaseConfigured ? escapeHtml(authState.user?.email ?? '') : 'Tus datos no salen del dispositivo'}</small></div>${isSupabaseConfigured ? '<button class="logout-button" data-action="sign-out">Cerrar sesión</button>' : ''}</div>
 </aside>`;
 
 const header = (kicker: string, title: string, subtitle: string, action = '') => `<header class="page-header"><div><span class="eyebrow">${kicker}</span><h1>${title}</h1><p>${subtitle}</p></div>${action}</header>`;
-const button = (label: string, action: string, className = 'button primary', extra = '') => `<button class="${className}" data-action="${action}" ${extra}>${label}</button>`;
+const button = (label: string, action: string, className = 'button primary', extra = '') => {
+  const readOnlyAction = activeRole === 'viewer' && /^(add-|delete-|edit-|toggle-|pay-fine:|apply-surcharge:|confirm-)/.test(action);
+  return `<button class="${className}" data-action="${action}" ${readOnlyAction ? 'disabled ' : ''}${extra}>${label}</button>`;
+};
 
 const dashboard = () => {
   const totals = summary(data);
@@ -75,7 +153,59 @@ const fineCard = (fine: Fine, pending: boolean) => { const due = pending && isSu
 const settingsView = () => `${header('CONFIGURACIÓN', 'Equipo y recargos', 'Define las reglas que utiliza Cuenta Clara para calcular cada multa.', '')}<section class="settings-layout"><div><form class="panel form-panel" id="settings-form"><span class="eyebrow">IDENTIDAD DEL EQUIPO</span><h2>Datos principales</h2><label>Nombre del equipo<input name="teamName" value="${escapeHtml(data.settings.teamName)}" required maxlength="60" /></label><div class="divider"></div><span class="eyebrow">PAGO TARDÍO</span><div class="toggle-line"><div><strong>Habilitar recargos</strong><span>Se avisa cuando vence el período y tú decides cuándo aplicarlo.</span></div><label class="switch"><input type="checkbox" name="lateFeesEnabled" ${data.settings.lateFeesEnabled ? 'checked' : ''}><span></span></label></div><label>Importe del recargo<div class="input-prefix"><span>€</span><input name="weeklySurcharge" type="number" min="0.01" step="0.01" value="${moneyInput(data.settings.weeklySurchargeCents)}" required /></div></label><label>Período hasta el siguiente recargo<input name="surchargePeriodDays" type="number" min="1" step="1" value="${data.settings.surchargePeriodDays}" required /><small class="field-hint">Días desde la multa o desde el último recargo aplicado.</small></label><button class="button primary" type="submit">Guardar configuración</button></form><section class="panel catalog-panel"><div class="panel-heading"><div><span class="eyebrow">CATÁLOGO</span><h2>Tipos de multa</h2></div>${button(`${icon('plus')} Nueva regla`, 'add-type', 'text-button')}</div>${data.fineTypes.length ? data.fineTypes.map((type) => `<div class="catalog-row"><div><strong>${escapeHtml(type.description)}</strong><span>${euros(type.amountCents)} predeterminados</span></div><div><button class="text-button" data-action="edit-type:${type.id}">Editar</button><button class="icon-button danger" data-action="delete-type:${type.id}" aria-label="Eliminar regla">${icon('trash')}</button></div></div>`).join('') : '<div class="empty-state compact">Crea reglas habituales para registrar multas más rápido.</div>'}</section></div><aside class="tip-card"><span class="tip-icon">✦</span><strong>Una regla clara</strong><p>Los recargos se aplican al cumplirse cada período configurado y siempre requieren confirmación.</p></aside></section>`;
 
 const overviewModal = (content: string) => `<div class="modal-backdrop"><div class="modal">${content}</div></div>`;
-const render = () => { app.innerHTML = `<div class="app-shell">${renderSidebar()}<main class="main-content"><div class="mobile-top"><div class="brand-mark">CC</div><strong>Cuenta Clara</strong><button class="icon-button" data-view="settings">${icon('settings')}</button></div><div class="content-wrap">${activeView === 'overview' ? dashboard() : activeView === 'players' ? playersView() : activeView === 'fines' ? finesView() : settingsView()}</div></main></div><div id="toast" class="toast"></div>`; };
+const render = () => {
+    if (activeView === 'settings' && isSupabaseConfigured && activeTeam) queueMicrotask(() => { const container = document.querySelector('.settings-layout > div'); container?.insertAdjacentHTML('afterbegin', `${auditPanel()}${membersPanel()}`); });
+  if (isSupabaseConfigured && authLoading) { app.innerHTML = '<main class="login-screen"><div class="login-loading">Comprobando sesión...</div></main>'; return; }
+  if (isSupabaseConfigured && !authState.user) { app.innerHTML = loginView(); return; }
+  if (isSupabaseConfigured && !activeTeam) { app.innerHTML = teamView(); return; }
+  app.innerHTML = `<div class="app-shell">${renderSidebar()}<main class="main-content"><div class="mobile-top"><div class="brand-mark">CC</div><strong>Cuenta Clara</strong>${isSupabaseConfigured ? '<button class="logout-button mobile-logout" data-action="sign-out">Cerrar sesión</button><button class="logout-button" data-action="manage-teams">Cambiar equipo</button>' : ''}<button class="icon-button" data-view="settings">${icon('settings')}</button></div><div class="content-wrap">${activeView === 'overview' ? dashboard() : activeView === 'players' ? playersView() : activeView === 'fines' ? finesView() : settingsView()}</div></main></div><div id="toast" class="toast"></div>`;
+};
+
+const loadTeams = async () => {
+  teamLoading = true;
+  teamError = '';
+  render();
+  try {
+    teams = await listTeams();
+    const storedTeamId = getStoredTeamId();
+    const storedTeam = storedTeamId ? teams.find((team) => team.id === storedTeamId) : undefined;
+    if (storedTeam) await selectTeam(storedTeam);
+    else if (teams[0]) await selectTeam(teams[0]);
+  } catch (error) {
+    teamError = error instanceof Error ? error.message : 'No se pudieron cargar los equipos';
+  } finally {
+    teamLoading = false;
+    render();
+  }
+};
+
+const selectTeam = async (team: Team) => {
+  teamLoading = true;
+  teamError = '';
+  render();
+  try {
+    const remoteData = await loadRemoteData(team.id);
+    await saveTeamSnapshot(team.id, remoteData);
+    syncStatus = 'synced';
+    teamMembers = await listTeamMembers(team.id);
+    auditEvents = await listAuditEvents(team.id);
+    activeRole = teamMembers.find((member) => member.user_id === authState.user?.id)?.role ?? 'viewer';
+    unsubscribeTeam();
+    activeTeam = team;
+    data = remoteData;
+    unsubscribeTeam = subscribeToTeamChanges(team.id, async () => {
+      try { data = await loadRemoteData(team.id); teamMembers = await listTeamMembers(team.id); auditEvents = await listAuditEvents(team.id); await saveTeamSnapshot(team.id, data); syncStatus = 'synced'; render(); } catch (error) { syncStatus = 'error'; teamError = error instanceof Error ? error.message : 'No se pudieron actualizar los datos'; render(); }
+    });
+    storeActiveTeam(team.id);
+  } catch (error) {
+    const cached = await loadTeamSnapshot(team.id).catch(() => null);
+    if (cached) { activeTeam = team; data = cached; syncStatus = 'offline'; teamError = 'Mostrando la última copia local; no se pudo conectar con PostgreSQL'; }
+    else { syncStatus = 'error'; teamError = error instanceof Error ? error.message : 'No se pudo cargar el equipo'; }
+  } finally {
+    teamLoading = false;
+    render();
+  }
+};
 
 const openModal = (content: string) => { document.body.insertAdjacentHTML('beforeend', overviewModal(content)); };
 const closeModal = () => document.querySelector('.modal-backdrop')?.remove();
@@ -92,10 +222,15 @@ const share = async () => { const text = whatsappMessage(data); try { if (naviga
 
 document.addEventListener('click', async (event) => {
   const target = event.target as HTMLElement;
+  const teamId = target.closest<HTMLElement>('[data-team-id]')?.dataset.teamId;
+  if (teamId) { const team = teams.find((entry) => entry.id === teamId); if (team) await selectTeam(team); return; }
   const view = target.closest<HTMLElement>('[data-view]')?.dataset.view;
   if (view) { activeView = view; render(); return; }
   const action = target.closest<HTMLElement>('[data-action]')?.dataset.action;
   if (!action) { if (target.matches('[data-close]')) closeModal(); return; }
+  if (action === 'sign-out') { await signOut(); return; }
+  if (action === 'manage-teams') { activeTeam = null; render(); return; }
+  else if (action.startsWith('delete-team:')) { const teamId = action.split(':')[1]; const team = teams.find((entry) => entry.id === teamId); if (team && team.created_by === authState.user?.id) confirmAction('¿Eliminar este equipo?', `${team.name}. Se borrarán definitivamente sus jugadores, multas, movimientos, miembros y auditoría.`, `confirm-delete-team:${team.id}`); }
   if (action === 'add-player') playerForm();
   else if (action === 'add-fine') fineForm();
   else if (action === 'add-transaction') transactionForm();
@@ -103,31 +238,57 @@ document.addEventListener('click', async (event) => {
   else if (action.startsWith('add-balance:')) balanceForm(action.split(':')[1]);
   else if (action === 'add-type') typeForm();
   else if (action === 'share') await share();
-  else if (action.startsWith('toggle-player:')) { const player = data.players.find((entry) => entry.id === action.split(':')[1]); if (player) { player.active = !player.active; await persist(player.active ? 'Jugador activado' : 'Jugador desactivado'); } }
+  else if (action.startsWith('change-role:') && activeTeam && activeRole === 'owner') { const [, userId, role] = action.split(':'); try { await changeTeamMemberRole(activeTeam.id, userId, role as TeamRole); teamMembers = await listTeamMembers(activeTeam.id); render(); showToast('Rol actualizado'); } catch (error) { showToast(errorMessage(error, 'No se pudo cambiar el rol')); } }
+  else if (action.startsWith('remove-member:') && activeTeam && activeRole === 'owner') { const userId = action.split(':')[1]; try { await removeTeamMember(activeTeam.id, userId); teamMembers = await listTeamMembers(activeTeam.id); render(); showToast('Miembro retirado'); } catch (error) { showToast(errorMessage(error, 'No se pudo retirar al miembro')); } }
+  else if (action.startsWith('toggle-player:')) { const player = data.players.find((entry) => entry.id === action.split(':')[1]); if (player) { const active = !player.active; if (isSupabaseConfigured && activeTeam) { try { await setPlayerActiveRemote(activeTeam.id, player.id, active); data = await loadRemoteData(activeTeam.id); render(); showToast(active ? 'Jugador activado' : 'Jugador desactivado'); } catch (error) { showToast(errorMessage(error, 'No se pudo actualizar el jugador')); } } else { player.active = active; await persist(active ? 'Jugador activado' : 'Jugador desactivado'); } } }
   else if (action.startsWith('pay-fine:')) { const fine = data.fines.find((entry) => entry.id === action.split(':')[1]); if (fine) confirmAction('¿Registrar este pago?', `Se marcará como pagada por ${euros(currentAmount(fine, data.settings))}.`, `confirm-pay:${fine.id}`, 'Marcar multa como pagada'); }
   else if (action.startsWith('apply-surcharge:')) { const fine = data.fines.find((entry) => entry.id === action.split(':')[1]); if (fine && isSurchargeDue(fine, data.settings)) confirmAction('¿Aplicar este recargo?', `Se añadirán ${euros(data.settings.weeklySurchargeCents)} y se registrará la fecha de aplicación.`, `confirm-apply-surcharge:${fine.id}`, 'Aplicar recargo'); }
   else if (action.startsWith('delete-fine:')) { const fine = data.fines.find((entry) => entry.id === action.split(':')[1]); if (fine) confirmAction('¿Eliminar esta multa?', `${playerName(fine.playerId)} · ${fine.description} · ${euros(currentAmount(fine, data.settings))}. Esta acción no se puede deshacer.`, `confirm-delete-fine:${fine.id}`); }
   else if (action.startsWith('delete-transaction:')) { const transaction = data.transactions.find((entry) => entry.id === action.split(':')[1]); if (transaction) confirmAction('¿Eliminar este movimiento?', `${transaction.description} · ${transaction.type === 'income' ? '+' : '-'}${euros(transaction.amountCents)}. Esta acción no se puede deshacer.`, `confirm-delete-transaction:${transaction.id}`); }
-  else if (action.startsWith('delete-player:')) { const player = data.players.find((entry) => entry.id === action.split(':')[1]); if (player) confirmAction('¿Eliminar este jugador?', `${player.name}. Sus multas se conservarán con el nombre histórico, pero no podrás asignarle nuevas.`, `confirm-delete-player:${player.id}`); }
+  else if (action.startsWith('delete-player:')) { const player = data.players.find((entry) => entry.id === action.split(':')[1]); if (player) { const hasFines = data.fines.some((fine) => fine.playerId === player.id); confirmAction(hasFines ? '¿Desactivar este jugador?' : '¿Eliminar este jugador?', hasFines ? `${player.name} tiene multas asociadas y se conservará para proteger el histórico.` : `${player.name}. Esta acción no se puede deshacer.`, `${hasFines ? 'confirm-deactivate-player' : 'confirm-delete-player'}:${player.id}`, hasFines ? 'Desactivar jugador' : undefined); } }
   else if (action.startsWith('edit-type:')) typeForm(action.split(':')[1]);
   else if (action.startsWith('delete-type:')) { const type = data.fineTypes.find((entry) => entry.id === action.split(':')[1]); if (type) confirmAction('¿Eliminar esta regla?', `${type.description} · ${euros(type.amountCents)}. Las multas ya registradas no cambiarán.`, `confirm-delete-type:${type.id}`); }
-  else if (action.startsWith('confirm-pay:')) { const fine = data.fines.find((entry) => entry.id === action.split(':')[1]); if (fine) { const remaining = currentAmount(fine, data.settings); fine.paidAmountCents = (fine.paidAmountCents ?? 0) + remaining; fine.finalAmountCents = fine.paidAmountCents; fine.status = 'paid'; fine.paidAt = today(); closeModal(); await persist('Pago registrado'); } }
-  else if (action.startsWith('confirm-apply-surcharge:')) { const updated = applySurcharge(data, action.split(':')[1]); if (!updated) { closeModal(); showToast('El período de recargo todavía no ha vencido'); return; } data = updated; closeModal(); await persist('Recargo aplicado'); }
-  else if (action.startsWith('confirm-delete-fine:')) { data.fines = data.fines.filter((fine) => fine.id !== action.split(':')[1]); closeModal(); await persist('Multa eliminada'); }
-  else if (action.startsWith('confirm-delete-transaction:')) { data.transactions = data.transactions.filter((transaction) => transaction.id !== action.split(':')[1]); closeModal(); await persist('Movimiento eliminado'); }
-  else if (action.startsWith('confirm-delete-player:')) { data.players = data.players.filter((player) => player.id !== action.split(':')[1]); closeModal(); await persist('Jugador eliminado'); }
-  else if (action.startsWith('confirm-delete-type:')) { data.fineTypes = data.fineTypes.filter((type) => type.id !== action.split(':')[1]); closeModal(); await persist('Regla eliminada'); }
+  else if (action.startsWith('confirm-pay:')) { const fineId = action.split(':')[1]; const fine = data.fines.find((entry) => entry.id === fineId); if (fine) { closeModal(); if (isSupabaseConfigured && activeTeam) { await markFinePaidRemote(activeTeam.id, fineId); data = await loadRemoteData(activeTeam.id); render(); showToast('Pago registrado'); } else { const remaining = currentAmount(fine, data.settings); fine.paidAmountCents = (fine.paidAmountCents ?? 0) + remaining; fine.finalAmountCents = fine.paidAmountCents; fine.status = 'paid'; fine.paidAt = today(); await persist('Pago registrado'); } } }
+  else if (action.startsWith('confirm-apply-surcharge:')) { const fineId = action.split(':')[1]; closeModal(); if (isSupabaseConfigured && activeTeam) { await applySurchargeRemote(activeTeam.id, fineId); data = await loadRemoteData(activeTeam.id); render(); showToast('Recargo aplicado'); } else { const updated = applySurcharge(data, fineId); if (!updated) { showToast('El período de recargo todavía no ha vencido'); return; } data = updated; await persist('Recargo aplicado'); } }
+  else if (action.startsWith('confirm-delete-fine:')) { const fineId = action.split(':')[1]; closeModal(); if (isSupabaseConfigured && activeTeam) { try { await deleteFineRemote(activeTeam.id, fineId); data = await loadRemoteData(activeTeam.id); render(); showToast('Multa eliminada'); } catch (error) { showToast(errorMessage(error, 'No se pudo eliminar la multa')); } } else { data.fines = data.fines.filter((fine) => fine.id !== fineId); await persist('Multa eliminada'); } }
+  else if (action.startsWith('confirm-delete-transaction:')) { const transactionId = action.split(':')[1]; closeModal(); if (isSupabaseConfigured && activeTeam) { try { await deleteTransactionRemote(activeTeam.id, transactionId); data = await loadRemoteData(activeTeam.id); render(); showToast('Movimiento eliminado'); } catch (error) { showToast(errorMessage(error, 'No se pudo eliminar el movimiento')); } } else { data.transactions = data.transactions.filter((transaction) => transaction.id !== transactionId); await persist('Movimiento eliminado'); } }
+  else if (action.startsWith('confirm-delete-player:')) { const playerId = action.split(':')[1]; closeModal(); if (isSupabaseConfigured && activeTeam) { try { await deletePlayerRemote(activeTeam.id, playerId); data = await loadRemoteData(activeTeam.id); render(); showToast('Jugador eliminado'); } catch (error) { showToast(errorMessage(error, 'No se pudo eliminar el jugador')); } } else { data.players = data.players.filter((player) => player.id !== playerId); await persist('Jugador eliminado'); } }
+  else if (action.startsWith('confirm-deactivate-player:')) { const playerId = action.split(':')[1]; closeModal(); if (isSupabaseConfigured && activeTeam) { try { await setPlayerActiveRemote(activeTeam.id, playerId, false); data = await loadRemoteData(activeTeam.id); render(); showToast('Jugador desactivado'); } catch (error) { showToast(errorMessage(error, 'No se pudo desactivar el jugador')); } } else { const player = data.players.find((entry) => entry.id === playerId); if (player) { player.active = false; await persist('Jugador desactivado'); } } }
+  else if (action.startsWith('confirm-delete-type:')) { const typeId = action.split(':')[1]; closeModal(); if (isSupabaseConfigured && activeTeam) { try { await deleteFineTypeRemote(activeTeam.id, typeId); data = await loadRemoteData(activeTeam.id); render(); showToast('Regla eliminada'); } catch (error) { showToast(errorMessage(error, 'No se pudo eliminar la regla')); } } else { data.fineTypes = data.fineTypes.filter((type) => type.id !== typeId); await persist('Regla eliminada'); } }
+  else if (action.startsWith('confirm-delete-team:')) { const teamId = action.split(':')[1]; const team = teams.find((entry) => entry.id === teamId); if (team) { closeModal(); teamLoading = true; teamError = ''; render(); try { await deleteTeam(team.id); teams = teams.filter((entry) => entry.id !== team.id); forgetStoredTeam(team.id); showToast('Equipo eliminado'); } catch (error) { teamError = errorMessage(error, 'No se pudo eliminar el equipo'); } finally { teamLoading = false; render(); } } }
 });
 
 document.addEventListener('change', (event) => { const target = event.target as HTMLSelectElement; if (target.name === 'typeId') { const type = data.fineTypes.find((entry) => entry.id === target.value); const form = target.closest('form'); if (type && form) { (form.elements.namedItem('description') as HTMLInputElement).value = type.description; (form.elements.namedItem('amount') as HTMLInputElement).value = moneyInput(type.amountCents); } } });
 document.addEventListener('submit', async (event) => { event.preventDefault(); const form = event.target as HTMLFormElement; const values = new FormData(form);
-  if (form.id === 'player-form') { const name = String(values.get('name') ?? '').trim(); if (!name) return; data.players.push({ id: uid(), name, active: true }); closeModal(); activeView = 'players'; await persist('Jugador añadido'); }
-  if (form.id === 'type-form') { const description = String(values.get('description') ?? '').trim(); const amountCents = parseAmount(String(values.get('amount') ?? '')); const typeId = String(values.get('typeId') ?? ''); if (!description || !amountCents) return showToast('Introduce una descripción y un importe válido'); const existing = data.fineTypes.find((type) => type.id === typeId); if (existing) { existing.description = description; existing.amountCents = amountCents; } else data.fineTypes.push({ id: uid(), description, amountCents }); closeModal(); activeView = 'settings'; await persist(existing ? 'Regla actualizada' : 'Regla guardada'); }
-  if (form.id === 'fine-form') { const description = String(values.get('description') ?? '').trim(); const amountCents = parseAmount(String(values.get('amount') ?? '')); const playerId = String(values.get('playerId') ?? ''); const date = String(values.get('date') ?? ''); if (!description || !amountCents || !playerId || !date) return showToast('Completa todos los campos'); const fine: Fine = { id: uid(), playerId, description, baseAmountCents: amountCents, date, status: 'pending', surchargeWeeks: 0, surchargeApplications: [] }; const updated = createFineWithBalance(data, fine); const consumed = updated.balanceMovements.length - data.balanceMovements.length; const createdFine = updated.fines.at(-1)!; data = updated; closeModal(); activeView = 'fines'; await persist(consumed ? (createdFine.status === 'paid' ? 'Multa pagada con saldo' : `Saldo aplicado; queda ${euros(currentAmount(createdFine, data.settings))} pendiente`) : 'Multa registrada'); }
-  if (form.id === 'transaction-form') { const type = String(values.get('type') ?? ''); const description = String(values.get('description') ?? ''); const amountCents = parseAmount(String(values.get('amount') ?? '')); const date = String(values.get('date') ?? ''); const transaction = createTransaction(type as 'income' | 'expense', amountCents, description, date); if (!transaction) return showToast('Introduce un tipo, importe, descripción y fecha válidos'); data.transactions.push(transaction); closeModal(); activeView = 'fines'; await persist('Movimiento guardado'); }
-  if (form.id === 'balance-form') { const playerId = String(values.get('playerId') ?? ''); const description = String(values.get('description') ?? ''); const amountCents = parseAmount(String(values.get('amount') ?? '')); const date = String(values.get('date') ?? ''); const updated = createBalanceDeposit(data, playerId, amountCents, description, date); if (!updated) return showToast('Introduce jugador, importe, descripción y fecha válidos'); data = updated; closeModal(); activeView = 'players'; await persist('Saldo precargado'); }
-  if (form.id === 'settings-form') { const teamName = String(values.get('teamName') ?? '').trim(); const weeklySurchargeCents = parseAmount(String(values.get('weeklySurcharge') ?? '')); const surchargePeriodDays = Number(values.get('surchargePeriodDays')); if (!teamName || !weeklySurchargeCents || !Number.isInteger(surchargePeriodDays) || surchargePeriodDays <= 0) return showToast('Revisa el nombre, el recargo y el período en días'); data.settings = { teamName, weeklySurchargeCents, surchargePeriodDays, lateFeesEnabled: values.get('lateFeesEnabled') === 'on' }; await persist('Configuración guardada'); }
+  if (form.id === 'login-form') { const email = String(values.get('email') ?? '').trim(); if (!email) return; loginBusy = true; authError = ''; authMessage = ''; render(); try { await requestMagicLink(email, window.location.href); authMessage = 'Revisa tu correo para continuar.'; } catch (error) { authError = error instanceof Error ? error.message : 'No se pudo enviar el enlace de acceso'; } finally { loginBusy = false; render(); } return; }
+  if (form.id === 'team-form') { const name = String(values.get('teamName') ?? '').trim(); if (!name) return; teamLoading = true; teamError = ''; render(); try { const team = await createTeam(name); teams = [...teams, team]; await selectTeam(team); } catch (error) { teamError = errorMessage(error, 'No se pudo crear el equipo'); } finally { teamLoading = false; render(); } return; }
+  if (form.id === 'member-invite-form' && activeTeam && activeRole === 'owner') { const email = String(values.get('email') ?? '').trim(); const role = String(values.get('role') ?? 'editor') as TeamRole; try { const invitation = await inviteTeamMember(activeTeam.id, email, role); const inviteUrl = `${window.location.origin}${window.location.pathname}?invite=${encodeURIComponent(invitation.token)}`; await copyToClipboard(inviteUrl); showToast('Enlace de invitación copiado en el portapapeles'); } catch (error) { showToast(errorMessage(error, 'No se pudo crear o copiar la invitación')); } return; }
+  if (form.id === 'player-form') { const name = String(values.get('name') ?? '').trim(); if (!name) return; const player = { id: uid(), name, active: true }; activeView = 'players'; if (isSupabaseConfigured && activeTeam) { try { await createPlayerRemote(activeTeam.id, player); data = await loadRemoteData(activeTeam.id); closeModal(); render(); showToast('Jugador añadido'); } catch (error) { showToast(errorMessage(error, 'No se pudo añadir el jugador')); } } else { data.players.push(player); closeModal(); await persist('Jugador añadido'); } }
+  if (form.id === 'type-form') { const description = String(values.get('description') ?? '').trim(); const amountCents = parseAmount(String(values.get('amount') ?? '')); const typeId = String(values.get('typeId') ?? ''); if (!description || !amountCents) return showToast('Introduce una descripción y un importe válido'); const type = { id: typeId || uid(), description, amountCents }; const existing = data.fineTypes.find((entry) => entry.id === typeId); activeView = 'settings'; if (isSupabaseConfigured && activeTeam) { try { if (existing) await updateFineTypeRemote(activeTeam.id, type); else await createFineTypeRemote(activeTeam.id, type); data = await loadRemoteData(activeTeam.id); closeModal(); render(); showToast(existing ? 'Regla actualizada' : 'Regla guardada'); } catch (error) { showToast(errorMessage(error, 'No se pudo guardar la regla')); } } else { if (existing) { existing.description = description; existing.amountCents = amountCents; } else data.fineTypes.push(type); closeModal(); await persist(existing ? 'Regla actualizada' : 'Regla guardada'); } }
+  if (form.id === 'fine-form') { const description = String(values.get('description') ?? '').trim(); const amountCents = parseAmount(String(values.get('amount') ?? '')); const playerId = String(values.get('playerId') ?? ''); const date = String(values.get('date') ?? ''); if (!description || !amountCents || !playerId || !date) return showToast('Completa todos los campos'); const fine: Fine = { id: uid(), playerId, description, baseAmountCents: amountCents, date, status: 'pending', surchargeWeeks: 0, surchargeApplications: [] }; activeView = 'fines'; if (isSupabaseConfigured && activeTeam) { try { await createFineRemote(activeTeam.id, fine); data = await loadRemoteData(activeTeam.id); closeModal(); render(); showToast('Multa registrada'); } catch (error) { showToast(errorMessage(error, 'No se pudo registrar la multa')); } } else { closeModal(); const updated = createFineWithBalance(data, fine); const consumed = updated.balanceMovements.length - data.balanceMovements.length; const createdFine = updated.fines.at(-1)!; data = updated; await persist(consumed ? (createdFine.status === 'paid' ? 'Multa pagada con saldo' : `Saldo aplicado; queda ${euros(currentAmount(createdFine, data.settings))} pendiente`) : 'Multa registrada'); } }
+  if (form.id === 'transaction-form') { const type = String(values.get('type') ?? ''); const description = String(values.get('description') ?? ''); const amountCents = parseAmount(String(values.get('amount') ?? '')); const date = String(values.get('date') ?? ''); const transaction = createTransaction(type as 'income' | 'expense', amountCents, description, date); if (!transaction) return showToast('Introduce un tipo, importe, descripción y fecha válidos'); activeView = 'fines'; if (isSupabaseConfigured && activeTeam) { try { await createTransactionRemote(activeTeam.id, transaction); data = await loadRemoteData(activeTeam.id); closeModal(); render(); showToast('Movimiento guardado'); } catch (error) { showToast(errorMessage(error, 'No se pudo guardar el movimiento')); } } else { data.transactions.push(transaction); closeModal(); await persist('Movimiento guardado'); } }
+  if (form.id === 'balance-form') { const playerId = String(values.get('playerId') ?? ''); const description = String(values.get('description') ?? ''); const amountCents = parseAmount(String(values.get('amount') ?? '')); const date = String(values.get('date') ?? ''); const updated = createBalanceDeposit(data, playerId, amountCents, description, date); if (!updated) return showToast('Introduce jugador, importe, descripción y fecha válidos'); const movement = updated.balanceMovements.at(-1)!; activeView = 'players'; if (isSupabaseConfigured && activeTeam) { try { await createBalanceDepositRemote(activeTeam.id, movement); data = await loadRemoteData(activeTeam.id); closeModal(); render(); showToast('Saldo precargado'); } catch (error) { showToast(errorMessage(error, 'No se pudo guardar el saldo')); } } else { data = updated; closeModal(); await persist('Saldo precargado'); } }
+  if (form.id === 'settings-form') { const teamName = String(values.get('teamName') ?? '').trim(); const weeklySurchargeCents = parseAmount(String(values.get('weeklySurcharge') ?? '')); const surchargePeriodDays = Number(values.get('surchargePeriodDays')); if (!teamName || !weeklySurchargeCents || !Number.isInteger(surchargePeriodDays) || surchargePeriodDays <= 0) return showToast('Revisa el nombre, el recargo y el período en días'); const settings = { teamName, weeklySurchargeCents, surchargePeriodDays, lateFeesEnabled: values.get('lateFeesEnabled') === 'on' }; if (isSupabaseConfigured && activeTeam) { try { await updateTeamSettingsRemote(activeTeam.id, settings); data = await loadRemoteData(activeTeam.id); render(); showToast('Configuración guardada'); } catch (error) { showToast(errorMessage(error, 'No se pudo guardar la configuración')); } } else { data.settings = settings; await persist('Configuración guardada'); } }
 });
 
-const init = async () => { data = await load(); await save(data); render(); if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => undefined); };
-init().catch(() => { app.innerHTML = '<main class="error-screen"><h1>No se pudo abrir el almacenamiento local</h1><p>Comprueba que el navegador permite datos para esta aplicación.</p></main>'; });
+const init = async () => {
+  if (isSupabaseConfigured) {
+    subscribeToAuth(async (state) => {
+      authState = state;
+      authError = '';
+      authMessage = '';
+      activeTeam = null;
+      teams = [];
+      unsubscribeTeam();
+      if (state.user) { await acceptPendingInvitation(); await loadTeams(); }
+      render();
+    });
+    authState = await getAuthState();
+    authLoading = false;
+    if (authState.user) { await acceptPendingInvitation(); await loadTeams(); }
+  }
+  if (!isSupabaseConfigured) { data = await load(); await save(data); }
+  render();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => undefined);
+};
+init().catch(() => { authLoading = false; app.innerHTML = '<main class="error-screen"><h1>No se pudo abrir la aplicación</h1><p>Comprueba la configuración de Supabase y que el navegador permite datos para esta aplicación.</p></main>'; });

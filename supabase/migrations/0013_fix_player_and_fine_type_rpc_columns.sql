@@ -1,0 +1,39 @@
+-- Fix RPCs to match the original players and fine_types schema.
+create or replace function public.create_player(
+  p_team_id uuid,
+  p_id uuid,
+  p_name text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  current_user_id uuid := auth.uid();
+begin
+  if current_user_id is null or not public.has_team_role(p_team_id, array['owner', 'editor']::public.team_role[]) then raise exception 'permission_denied'; end if;
+  if p_name is null or length(trim(p_name)) not between 1 and 120 then raise exception 'player_invalid'; end if;
+  if exists (select 1 from public.players where id = p_id and team_id = p_team_id) then return; end if;
+  insert into public.players (id, team_id, name, active)
+  values (p_id, p_team_id, trim(p_name), true);
+  insert into public.audit_log (team_id, user_id, action, entity_type, entity_id)
+  values (p_team_id, current_user_id, 'create', 'player', p_id);
+end;
+$$;
+
+create or replace function public.create_fine_type(p_team_id uuid, p_id uuid, p_description text, p_amount_cents integer)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null or not public.has_team_role(p_team_id, array['owner', 'editor']::public.team_role[]) then raise exception 'permission_denied'; end if;
+  if p_description is null or length(trim(p_description)) not between 1 and 120 or p_amount_cents <= 0 then raise exception 'fine_type_invalid'; end if;
+  if exists (select 1 from public.fine_types where id = p_id and team_id = p_team_id) then return; end if;
+  insert into public.fine_types (id, team_id, description, amount_cents)
+  values (p_id, p_team_id, trim(p_description), p_amount_cents);
+  insert into public.audit_log (team_id, user_id, action, entity_type, entity_id) values (p_team_id, auth.uid(), 'create', 'fine_type', p_id);
+end;
+$$;

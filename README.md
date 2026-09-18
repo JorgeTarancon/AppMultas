@@ -38,14 +38,14 @@ La base de colaboración está preparada, pero es opt-in: si no existen variable
 1. Copia `.env.example` como `.env`.
 2. Sustituye `VITE_SUPABASE_URL` por la URL del proyecto Supabase.
 3. Sustituye `VITE_SUPABASE_ANON_KEY` por la clave pública `anon` del proyecto.
-4. Ejecuta el contenido de `supabase/migrations/0001_collaboration_foundation.sql` desde el SQL Editor de Supabase.
+4. Ejecuta `supabase/migrations/0001_collaboration_foundation.sql` y después `supabase/migrations/0002_allow_team_creation.sql` desde el SQL Editor de Supabase.
 5. En Authentication > URL Configuration, añade la URL de desarrollo y la URL de producción como destinos permitidos.
 6. Configura el proveedor de email de Supabase para poder enviar enlaces mágicos.
 7. Reinicia Vite después de crear o modificar `.env`.
 
 No introduzcas claves `service_role` en `.env` del frontend ni en el código cliente. La clave `anon` está diseñada para usarse junto con las políticas RLS de la base de datos.
 
-La integración inicial expone el cliente y las operaciones base en `src/supabase.ts` y `src/collaboration.ts`. La interfaz todavía no cambia automáticamente al modo multiusuario hasta completar el flujo de sesión, migración y sincronización descrito en la propuesta OpenSpec.
+La interfaz autenticada usa PostgreSQL como fuente de verdad para la configuración, jugadores, catálogo, multas, recargos, transacciones y movimientos de saldo. IndexedDB solo se utiliza cuando Supabase no está configurado; no se migran los datos locales al backend. Los cambios del equipo activo se recargan mediante Realtime.
 
 Para que el servidor sea accesible desde otros dispositivos de la red:
 

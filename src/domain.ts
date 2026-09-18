@@ -22,6 +22,7 @@ export type Fine = {
 };
 
 export type SurchargeApplication = {
+  id: string;
   appliedAt: string;
   amountCents: number;
   totalAmountCents: number;
@@ -143,6 +144,7 @@ export const applySurcharge = (data: AppData, fineId: string, appliedAt = new Da
   if (!fine || !isSurchargeDue(fine, data.settings, dateOnly(appliedAt))) return null;
   const amountCents = data.settings.weeklySurchargeCents;
   const application: SurchargeApplication = {
+    id: uid(),
     appliedAt,
     amountCents,
     totalAmountCents: currentAmount(fine, data.settings) + amountCents,

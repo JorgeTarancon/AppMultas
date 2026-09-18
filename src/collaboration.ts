@@ -36,7 +36,9 @@ export const subscribeToTeamChanges = (teamId: string, onChange: (payload: unkno
   const channel: RealtimeChannel = client
     .channel(`team:${teamId}`)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'players', filter: `team_id=eq.${teamId}` }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'fine_types', filter: `team_id=eq.${teamId}` }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'fines', filter: `team_id=eq.${teamId}` }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'surcharge_applications', filter: `team_id=eq.${teamId}` }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions', filter: `team_id=eq.${teamId}` }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'balance_movements', filter: `team_id=eq.${teamId}` }, onChange)
     .subscribe();

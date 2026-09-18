@@ -36,7 +36,7 @@ const normalizeApplication = (value: unknown): SurchargeApplication | null => {
   if (!isRecord(value) || typeof value.appliedAt !== 'string') return null;
   const amountCents = nonNegativeInteger(value.amountCents, -1);
   const totalAmountCents = nonNegativeInteger(value.totalAmountCents, -1);
-  return amountCents >= 0 && totalAmountCents >= 0 ? { appliedAt: value.appliedAt, amountCents, totalAmountCents } : null;
+  return amountCents >= 0 && totalAmountCents >= 0 ? { id: typeof value.id === 'string' ? value.id : crypto.randomUUID(), appliedAt: value.appliedAt, amountCents, totalAmountCents } : null;
 };
 
 const normalizeFine = (value: unknown): Fine | null => {

@@ -2,6 +2,8 @@ import './styles.css';
 import { AppData, applySurcharge, balanceForPlayer, createBalanceDeposit, createFineWithBalance, createTransaction, currentAmount, euros, Fine, formatDate, isSurchargeDue, parseAmount, surchargeCount, summary, today, Transaction, uid, whatsappMessage } from './domain';
 import { load, save } from './storage';
 import { AuthState, getAuthState, isSupabaseConfigured, requestMagicLink, signOut, subscribeToAuth } from './supabase';
+import { createTeam, listTeams, subscribeToTeamChanges, Team } from './collaboration';
+import { loadRemoteData, saveRemoteData } from './remoteRepository';
 
 let data: AppData;
 let activeView = 'overview';
@@ -11,6 +13,11 @@ let authLoading = isSupabaseConfigured;
 let authError = '';
 let authMessage = '';
 let loginBusy = false;
+let teams: Team[] = [];
+let activeTeam: Team | null = null;
+let teamLoading = false;
+let teamError = '';
+let unsubscribeTeam: () => void = () => undefined;
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]!));
@@ -26,9 +33,11 @@ const showToast = (message: string) => {
 };
 
 const loginView = () => `<main class="login-screen"><section class="login-panel"><div class="brand login-brand"><div class="brand-mark">CC</div><div><strong>Cuenta Clara</strong><span>Control de equipo</span></div></div><span class="eyebrow">ACCESO DEL EQUIPO</span><h1>Entra a tu cuenta</h1><p>Usa tu email para recibir un enlace de acceso seguro. No necesitas contraseña.</p><form id="login-form" class="login-form"><label>Email<input name="email" type="email" autocomplete="email" required placeholder="tu@email.com" /></label><button class="button primary" type="submit" ${loginBusy ? 'disabled' : ''}>${loginBusy ? 'Enviando...' : 'Enviar enlace de acceso'}</button>${authMessage ? `<div class="login-message success">${escapeHtml(authMessage)}</div>` : ''}${authError ? `<div class="login-message error">${escapeHtml(authError)}</div>` : ''}</form></section></main>`;
+const teamView = () => `<main class="login-screen"><section class="login-panel team-panel"><div class="brand login-brand"><div class="brand-mark">CC</div><div><strong>Cuenta Clara</strong><span>Control de equipo</span></div></div><span class="eyebrow">EQUIPOS DISPONIBLES</span><h1>Elige tu equipo</h1><p>Selecciona un equipo existente o crea uno nuevo para empezar a colaborar.</p>${teams.length ? `<div class="team-list">${teams.map((team) => `<button class="team-option" data-team-id="${team.id}"><strong>${escapeHtml(team.name)}</strong><span>Equipo compartido</span></button>`).join('')}</div>` : ''}<form id="team-form" class="login-form"><label>${teams.length ? 'Crear otro equipo' : 'Nombre del equipo'}<input name="teamName" required maxlength="120" placeholder="Ej. Los del martes" /></label><button class="button primary" type="submit" ${teamLoading ? 'disabled' : ''}>${teamLoading ? 'Creando...' : 'Crear equipo'}</button>${teamError ? `<div class="login-message error">${escapeHtml(teamError)}</div>` : ''}</form><button class="text-button team-signout" data-action="sign-out">Cerrar sesión</button></section></main>`;
 
 const persist = async (message?: string) => {
-  await save(data);
+  if (isSupabaseConfigured && activeTeam) await saveRemoteData(activeTeam.id, data);
+  else await save(data);
   render();
   if (message) showToast(message);
 };
@@ -86,7 +95,43 @@ const overviewModal = (content: string) => `<div class="modal-backdrop"><div cla
 const render = () => {
   if (isSupabaseConfigured && authLoading) { app.innerHTML = '<main class="login-screen"><div class="login-loading">Comprobando sesión...</div></main>'; return; }
   if (isSupabaseConfigured && !authState.user) { app.innerHTML = loginView(); return; }
+  if (isSupabaseConfigured && !activeTeam) { app.innerHTML = teamView(); return; }
   app.innerHTML = `<div class="app-shell">${renderSidebar()}<main class="main-content"><div class="mobile-top"><div class="brand-mark">CC</div><strong>Cuenta Clara</strong>${isSupabaseConfigured ? '<button class="logout-button mobile-logout" data-action="sign-out">Cerrar sesión</button>' : ''}<button class="icon-button" data-view="settings">${icon('settings')}</button></div><div class="content-wrap">${activeView === 'overview' ? dashboard() : activeView === 'players' ? playersView() : activeView === 'fines' ? finesView() : settingsView()}</div></main></div><div id="toast" class="toast"></div>`;
+};
+
+const loadTeams = async () => {
+  teamLoading = true;
+  teamError = '';
+  render();
+  try {
+    teams = await listTeams();
+    if (teams[0]) await selectTeam(teams[0]);
+  } catch (error) {
+    teamError = error instanceof Error ? error.message : 'No se pudieron cargar los equipos';
+  } finally {
+    teamLoading = false;
+    render();
+  }
+};
+
+const selectTeam = async (team: Team) => {
+  teamLoading = true;
+  teamError = '';
+  render();
+  try {
+    const remoteData = await loadRemoteData(team.id);
+    unsubscribeTeam();
+    activeTeam = team;
+    data = remoteData;
+    unsubscribeTeam = subscribeToTeamChanges(team.id, async () => {
+      try { data = await loadRemoteData(team.id); render(); } catch (error) { teamError = error instanceof Error ? error.message : 'No se pudieron actualizar los datos'; render(); }
+    });
+  } catch (error) {
+    teamError = error instanceof Error ? error.message : 'No se pudo cargar el equipo';
+  } finally {
+    teamLoading = false;
+    render();
+  }
 };
 
 const openModal = (content: string) => { document.body.insertAdjacentHTML('beforeend', overviewModal(content)); };
@@ -104,6 +149,8 @@ const share = async () => { const text = whatsappMessage(data); try { if (naviga
 
 document.addEventListener('click', async (event) => {
   const target = event.target as HTMLElement;
+  const teamId = target.closest<HTMLElement>('[data-team-id]')?.dataset.teamId;
+  if (teamId) { const team = teams.find((entry) => entry.id === teamId); if (team) await selectTeam(team); return; }
   const view = target.closest<HTMLElement>('[data-view]')?.dataset.view;
   if (view) { activeView = view; render(); return; }
   const action = target.closest<HTMLElement>('[data-action]')?.dataset.action;
@@ -121,7 +168,7 @@ document.addEventListener('click', async (event) => {
   else if (action.startsWith('apply-surcharge:')) { const fine = data.fines.find((entry) => entry.id === action.split(':')[1]); if (fine && isSurchargeDue(fine, data.settings)) confirmAction('¿Aplicar este recargo?', `Se añadirán ${euros(data.settings.weeklySurchargeCents)} y se registrará la fecha de aplicación.`, `confirm-apply-surcharge:${fine.id}`, 'Aplicar recargo'); }
   else if (action.startsWith('delete-fine:')) { const fine = data.fines.find((entry) => entry.id === action.split(':')[1]); if (fine) confirmAction('¿Eliminar esta multa?', `${playerName(fine.playerId)} · ${fine.description} · ${euros(currentAmount(fine, data.settings))}. Esta acción no se puede deshacer.`, `confirm-delete-fine:${fine.id}`); }
   else if (action.startsWith('delete-transaction:')) { const transaction = data.transactions.find((entry) => entry.id === action.split(':')[1]); if (transaction) confirmAction('¿Eliminar este movimiento?', `${transaction.description} · ${transaction.type === 'income' ? '+' : '-'}${euros(transaction.amountCents)}. Esta acción no se puede deshacer.`, `confirm-delete-transaction:${transaction.id}`); }
-  else if (action.startsWith('delete-player:')) { const player = data.players.find((entry) => entry.id === action.split(':')[1]); if (player) confirmAction('¿Eliminar este jugador?', `${player.name}. Sus multas se conservarán con el nombre histórico, pero no podrás asignarle nuevas.`, `confirm-delete-player:${player.id}`); }
+  else if (action.startsWith('delete-player:')) { const player = data.players.find((entry) => entry.id === action.split(':')[1]); if (player) { const hasFines = data.fines.some((fine) => fine.playerId === player.id); confirmAction(hasFines ? '¿Desactivar este jugador?' : '¿Eliminar este jugador?', hasFines ? `${player.name} tiene multas asociadas y se conservará para proteger el histórico.` : `${player.name}. Esta acción no se puede deshacer.`, `${hasFines ? 'confirm-deactivate-player' : 'confirm-delete-player'}:${player.id}`, hasFines ? 'Desactivar jugador' : undefined); } }
   else if (action.startsWith('edit-type:')) typeForm(action.split(':')[1]);
   else if (action.startsWith('delete-type:')) { const type = data.fineTypes.find((entry) => entry.id === action.split(':')[1]); if (type) confirmAction('¿Eliminar esta regla?', `${type.description} · ${euros(type.amountCents)}. Las multas ya registradas no cambiarán.`, `confirm-delete-type:${type.id}`); }
   else if (action.startsWith('confirm-pay:')) { const fine = data.fines.find((entry) => entry.id === action.split(':')[1]); if (fine) { const remaining = currentAmount(fine, data.settings); fine.paidAmountCents = (fine.paidAmountCents ?? 0) + remaining; fine.finalAmountCents = fine.paidAmountCents; fine.status = 'paid'; fine.paidAt = today(); closeModal(); await persist('Pago registrado'); } }
@@ -129,12 +176,14 @@ document.addEventListener('click', async (event) => {
   else if (action.startsWith('confirm-delete-fine:')) { data.fines = data.fines.filter((fine) => fine.id !== action.split(':')[1]); closeModal(); await persist('Multa eliminada'); }
   else if (action.startsWith('confirm-delete-transaction:')) { data.transactions = data.transactions.filter((transaction) => transaction.id !== action.split(':')[1]); closeModal(); await persist('Movimiento eliminado'); }
   else if (action.startsWith('confirm-delete-player:')) { data.players = data.players.filter((player) => player.id !== action.split(':')[1]); closeModal(); await persist('Jugador eliminado'); }
+  else if (action.startsWith('confirm-deactivate-player:')) { const player = data.players.find((entry) => entry.id === action.split(':')[1]); if (player) { player.active = false; closeModal(); await persist('Jugador desactivado'); } }
   else if (action.startsWith('confirm-delete-type:')) { data.fineTypes = data.fineTypes.filter((type) => type.id !== action.split(':')[1]); closeModal(); await persist('Regla eliminada'); }
 });
 
 document.addEventListener('change', (event) => { const target = event.target as HTMLSelectElement; if (target.name === 'typeId') { const type = data.fineTypes.find((entry) => entry.id === target.value); const form = target.closest('form'); if (type && form) { (form.elements.namedItem('description') as HTMLInputElement).value = type.description; (form.elements.namedItem('amount') as HTMLInputElement).value = moneyInput(type.amountCents); } } });
 document.addEventListener('submit', async (event) => { event.preventDefault(); const form = event.target as HTMLFormElement; const values = new FormData(form);
   if (form.id === 'login-form') { const email = String(values.get('email') ?? '').trim(); if (!email) return; loginBusy = true; authError = ''; authMessage = ''; render(); try { await requestMagicLink(email, window.location.href); authMessage = 'Revisa tu correo para continuar.'; } catch (error) { authError = error instanceof Error ? error.message : 'No se pudo enviar el enlace de acceso'; } finally { loginBusy = false; render(); } return; }
+  if (form.id === 'team-form') { const name = String(values.get('teamName') ?? '').trim(); if (!name) return; teamLoading = true; teamError = ''; render(); try { const team = await createTeam(name); teams = [...teams, team]; await selectTeam(team); } catch (error) { teamError = error instanceof Error ? error.message : 'No se pudo crear el equipo'; } finally { teamLoading = false; render(); } return; }
   if (form.id === 'player-form') { const name = String(values.get('name') ?? '').trim(); if (!name) return; data.players.push({ id: uid(), name, active: true }); closeModal(); activeView = 'players'; await persist('Jugador añadido'); }
   if (form.id === 'type-form') { const description = String(values.get('description') ?? '').trim(); const amountCents = parseAmount(String(values.get('amount') ?? '')); const typeId = String(values.get('typeId') ?? ''); if (!description || !amountCents) return showToast('Introduce una descripción y un importe válido'); const existing = data.fineTypes.find((type) => type.id === typeId); if (existing) { existing.description = description; existing.amountCents = amountCents; } else data.fineTypes.push({ id: uid(), description, amountCents }); closeModal(); activeView = 'settings'; await persist(existing ? 'Regla actualizada' : 'Regla guardada'); }
   if (form.id === 'fine-form') { const description = String(values.get('description') ?? '').trim(); const amountCents = parseAmount(String(values.get('amount') ?? '')); const playerId = String(values.get('playerId') ?? ''); const date = String(values.get('date') ?? ''); if (!description || !amountCents || !playerId || !date) return showToast('Completa todos los campos'); const fine: Fine = { id: uid(), playerId, description, baseAmountCents: amountCents, date, status: 'pending', surchargeWeeks: 0, surchargeApplications: [] }; const updated = createFineWithBalance(data, fine); const consumed = updated.balanceMovements.length - data.balanceMovements.length; const createdFine = updated.fines.at(-1)!; data = updated; closeModal(); activeView = 'fines'; await persist(consumed ? (createdFine.status === 'paid' ? 'Multa pagada con saldo' : `Saldo aplicado; queda ${euros(currentAmount(createdFine, data.settings))} pendiente`) : 'Multa registrada'); }
@@ -145,17 +194,21 @@ document.addEventListener('submit', async (event) => { event.preventDefault(); c
 
 const init = async () => {
   if (isSupabaseConfigured) {
-    authState = await getAuthState();
-    authLoading = false;
     subscribeToAuth(async (state) => {
       authState = state;
       authError = '';
       authMessage = '';
-      if (state.user) { data = await load(); await save(data); }
+      activeTeam = null;
+      teams = [];
+      unsubscribeTeam();
+      if (state.user) await loadTeams();
       render();
     });
+    authState = await getAuthState();
+    authLoading = false;
+    if (authState.user) await loadTeams();
   }
-  if (!isSupabaseConfigured || authState.user) { data = await load(); await save(data); }
+  if (!isSupabaseConfigured) { data = await load(); await save(data); }
   render();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => undefined);
 };
